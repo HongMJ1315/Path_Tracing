@@ -1,12 +1,7 @@
-// #include "GLinclude.h"
-#include "ray.h"
-#include "glsl.h"
-#include "vao.h"
-#include "mouse.h"
-#include "mesh.h"
-#include "light.h"
+#include "GLinclude.h"
 #include "object.h"
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <limits>
 #include <cmath>
@@ -19,23 +14,12 @@
 glm::vec3 eye;
 std::pair<int, int> resolution;
 struct Camera{
-    glm::vec3 ul, ur, ll, lr;
+    // glm::vec3 ul, ur, ll, lr;
+    glm::vec3 eye; //eye position
+    glm::vec3 look_at; // look position
+    glm::vec3 view_up; //view up vector
+    float fov;
 };
-
-
-
-
-struct Hit{
-    bool hit = false;
-    float t = std::numeric_limits<float>::infinity();
-    glm::vec3 pos{ 0.0f };
-    glm::vec3 normal{ 0.0f };
-    glm::vec3 bary{ 0.0f };   // Triangle: (w,u,v) ; Sphere: (u,v,0)
-    float u = 0.0f, v = 0.0f;
-    const Object *obj = nullptr;
-    ObjKind kind = ObjKind::Unknown;
-};
-
 
 std::ostream &operator<<(std::ostream &os, const glm::vec3 vec){
     os << "(" << vec.x << ", " << vec.y << ", " << vec.z << ")";
@@ -63,6 +47,7 @@ inline Hit firstHit(const Ray &inRay, const std::vector<const Object *> &scene,
             best.pos = ray.point + t * ray.vec;
             best.u = u;
             best.v = v;
+            best.eye_dir = glm::normalize(ray.vec);
             best.obj = obj;
 
             if(dynamic_cast<const Sphere *>(obj))   best.kind = ObjKind::Sphere;
@@ -84,10 +69,46 @@ inline Hit firstHit(const Ray &inRay, const std::vector<const Object *> &scene,
     return best;
 }
 
+glm::vec3 phong(const Hit &hit, const std::vector<Light> &lights,
+    const std::vector<const Object *> &scene){
+    const Material &mtl = hit.obj->mtl;
+
+    glm::vec3 N = glm::normalize(hit.normal);
+    glm::vec3 V = glm::normalize(hit.eye_dir);   // 表面 → 眼睛
+
+    glm::vec3 color = mtl.Ka;
+
+    for(const auto &l : lights){
+        // 約定：l.dir 是「表面 → 光源」
+        glm::vec3 L = glm::normalize(l.dir);
+
+        Ray shadow_ray = Ray();
+        shadow_ray.point = hit.pos;
+        shadow_ray.vec = l.dir;
+        Hit shadow_hit = firstHit(shadow_ray, scene);
+
+        // Diffuse
+        float ndotl = glm::max(0.0f, glm::dot(N, L));
+        glm::vec3 diffuse = mtl.Kd * l.illum * ndotl;
+
+        // Specular（注意入射向量要用 -L）
+        glm::vec3 R = glm::reflect(L, N);
+        float rv = glm::max(0.0f, glm::dot(R, V));
+        float specPow = (mtl.exp > 0.0f) ? std::pow(rv, mtl.exp) : 0.0f;
+        glm::vec3 specular = mtl.Ks * l.illum * specPow;
+
+        if(!shadow_hit.hit){
+            color += diffuse + specular;
+        }
+    }
+    return color; // 寫圖前再做 tone mapping / gamma
+}
+
 
 glm::vec3 path_tracing(Ray ray,
     std::vector<Sphere> &balls,
-    std::vector<Triangle> &triangles){
+    std::vector<Triangle> &triangles,
+    std::vector<Light> &lights){
     std::vector<const Object *> scene;
     scene.reserve(balls.size() + triangles.size());
     for(const auto &s : balls)      scene.push_back(&s);
@@ -102,10 +123,12 @@ glm::vec3 path_tracing(Ray ray,
     }
 
     glm::vec3 n = glm::normalize(h.normal);
-    glm::vec3 color = glm::vec3(255 * (h.pos.x + 1.0) / 2.0,
-        255 * (h.pos.y + 1.0) / 2.0,
-        255 * (h.pos.z + 1.0) / 2.0);
+    // glm::vec3 color = glm::vec3(255 * (h.pos.x + 1.0) / 2.0,
+    //     255 * (h.pos.y + 1.0) / 2.0,
+    //     255 * (h.pos.z + 1.0) / 2.0);
     // std::cout << h.pos << std::endl;
+    glm::vec3 color = phong(h, lights, scene);
+    // std::cout << color << std::endl;
     return color;
 }
 
@@ -137,12 +160,6 @@ int main(int argc, char **argv){
         return -1;
     }
 
-    // Callbacks
-    // glfwSetFramebufferSizeCallback(window, reshape);
-    glfwSetMouseButtonCallback(window, mouse_button_callback);
-    glfwSetCursorPosCallback(window, cursor_pos_callback);
-    glfwSetScrollCallback(window, scroll_callback);
-
     // GL state
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -155,29 +172,33 @@ int main(int argc, char **argv){
     std::fstream input("../../input.txt");
     std::vector<Sphere> balls;
     std::vector<Triangle> triangles;
+    std::vector<Light> lights;
     Camera camera;
     char t;
     Material mtl;
     while(input >> t){
         if(t == 'E'){
             float x, y, z;
-            input >> eye;
+            input >> camera.eye;
         }
-        else if(t == 'O'){
-            input >> camera.ul;
-            input >> camera.ur;
-            input >> camera.ll;
-            input >> camera.lr;
+        else if(t == 'V'){
+            input >> camera.look_at >> camera.view_up;
+        }
+        else if(t == 'F'){
+            input >> camera.fov;
+            // std::cout << "read F" << std::endl;
         }
         else if(t == 'R'){
             input >> resolution.first >> resolution.second;
+            // std::cout << "read R" << std::endl;
         }
         else if(t == 'S'){
             Sphere s;
             input >> s.center >> s.r;
             s.scale = glm::vec3(1, 1, 1);
-            // s.mtl = mtl;
+            s.mtl = mtl;
             balls.push_back(s);
+            // std::cout << "read S" << std::endl;
         }
         else if(t == 'T'){
             Triangle tri;
@@ -186,26 +207,33 @@ int main(int argc, char **argv){
                 input >> vert;
                 tri.vert[i] = vert;
             }
-            // tri.mtl = mtl;
+            tri.mtl = mtl;
             triangles.push_back(tri);
+            // std::cout << "read T" << std::endl;
         }
         else if(t == 'M'){
             float ka, kd, ks;
             glm::vec3 color;
-            std::cin >> color;
-            std::cin >> ka >> kd >> ks >> mtl.exp >> mtl.reflect;
+            input >> color;
+            input >> ka >> kd >> ks >> mtl.exp >> mtl.reflect;
             mtl.Ka = color * ka;
             mtl.Kd = color * kd;
             mtl.Ks = color * ks;
+            // std::cout << color << " " << mtl.Ka << " " << mtl.Kd << " " << mtl.Ks << std::endl;
+            // std::cout << "read M" << std::endl;
+        }
+        else if(t == 'L'){
+            Light light;
+            input >> light.dir;
+            lights.push_back(light);
         }
     }
 
-    std::cout << "Eye Position: (" << eye.x << ", " << eye.y << ", " << eye.z << ")" << std::endl;
+    std::cout << "Eye Position: " << camera.eye << std::endl;
     std::cout << "Screen Info: " << std::endl;
-    std::cout << "  UL: " << camera.ul << std::endl;
-    std::cout << "  UR: " << camera.ur << std::endl;
-    std::cout << "  LL: " << camera.ll << std::endl;
-    std::cout << "  LR: " << camera.lr << std::endl;
+    std::cout << "  Look At: " << camera.look_at << std::endl;
+    std::cout << "  View Up: " << camera.view_up << std::endl;
+    std::cout << "  FOV: " << camera.fov << std::endl;
     std::cout << "Ball:" << std::endl;
     for(auto b : balls){
         std::cout << "  Location: " << b.center << std::endl;
@@ -219,30 +247,60 @@ int main(int argc, char **argv){
         }
         std::cout << "  )" << std::endl;
     }
+    // ---- 解析度/相機基底 ----
+    const int W = resolution.first;   // width
+    const int H = resolution.second;  // height
+    const float aspect = float(W) / float(H);
 
-    glm::vec3 width = camera.lr - camera.ll,
-        height = camera.ul - camera.ll;
-    std::cout << width / (float) resolution.first << "\n" << height / (float) resolution.first << std::endl;
-    glm::vec3 dx = width / (float) resolution.first;
-    glm::vec3 dy = height / (float) resolution.second;
-    cv::Mat img(resolution.first, resolution.second, CV_8UC3);  // 三通道 (BGR)
-    for(int i = 0; i < resolution.first; i++){
-        for(int j = 0; j < resolution.second; j++){
-            glm::vec3 pixel_pos = camera.ll + dx * (float) i + dy * (float) j;
-            // std::cout << pixel_pos << std::endl;
-            glm::vec3 dir = pixel_pos - eye;
-            Ray ray(eye, dir);
-            glm::vec3 pixel_color = path_tracing(ray, balls, triangles);
-            cv::Vec3b &pixel = img.at<cv::Vec3b>(j, i);
-            pixel[2] = static_cast<uchar>(pixel_color.x);
-            pixel[0] = static_cast<uchar>(pixel_color.y);
-            pixel[1] = static_cast<uchar>(pixel_color.z);
-            // std::cout << pixel_pos << std::endl;
+    auto deg2rad = [](float d){ return d * float(M_PI) / 180.0f; };
+    const float fov_rad = deg2rad(camera.fov);     // <-- 若本來就是弧度，就用 camera.fov
+
+    const glm::vec3 cam_eye = camera.eye;
+    glm::vec3 f = glm::normalize(camera.look_at - camera.eye); // forward
+    glm::vec3 up = glm::normalize(camera.view_up);
+    glm::vec3 r = glm::normalize(glm::cross(f, up));           // right
+    glm::vec3 u = glm::cross(r, f);                            // true up
+
+    // ---- 影像平面四角（dist=1） ----
+    const float dist = 1.0f;
+    const glm::vec3 center = cam_eye + dist * f;
+    const float half_h = std::tan(0.5f * fov_rad); // vertical fov
+    const float half_w = half_h * aspect;
+
+    glm::vec3 UL = center + u * half_h - r * half_w;
+    glm::vec3 UR = center + u * half_h + r * half_w;
+    glm::vec3 LL = center - u * half_h - r * half_w;
+    glm::vec3 LR = center - u * half_h + r * half_w;
+
+    // 每像素步進（從 UL 出發）
+    glm::vec3 dx = (UR - UL) / float(W);
+    glm::vec3 dy = (LL - UL) / float(H);
+
+    // ---- OpenCV 影像 (rows=H, cols=W) ----
+    cv::Mat img(H, W, CV_8UC3);
+
+    for(int j = 0; j < H; ++j){
+        for(int i = 0; i < W; ++i){
+            // 像素中心
+            glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f) + dy * (float(j) + 0.5f);
+            glm::vec3 dir = glm::normalize(pixel_pos - cam_eye);
+            Ray ray(cam_eye, dir);
+            
+            glm::vec3 col = path_tracing(ray, balls, triangles, lights) * 255.f;
+
+            // 建議先用法向視覺化驗證 (可把這行打開，並略過 col)
+            // col = 0.5f * (glm::normalize(firstHit(ray, {...}).normal) + glm::vec3(1.0f));
+
+            // Clamp & BGR
+            col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(255.0f));
+            cv::Vec3b &pix = img.at<cv::Vec3b>(j, i);
+            pix[0] = (uchar) col.z; // B
+            pix[1] = (uchar) col.y; // G
+            pix[2] = (uchar) col.x; // R
         }
     }
-    cv::Mat filp_img(resolution.first, resolution.second, CV_8UC3);  // 三通道 (BGR)
-    cv::flip(img, filp_img, 0);
-    if(!cv::imwrite("color_output.png", filp_img)){
+
+    if(!cv::imwrite("color_output.png", img)){
         std::cerr << "彩色圖片輸出失敗！" << std::endl;
     }
 
