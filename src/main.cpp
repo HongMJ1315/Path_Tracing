@@ -6,9 +6,11 @@
 #include <limits>
 #include <cmath>
 #include <algorithm>
+#include <random>
 #include <corecrt_math_defines.h>
 #include <opencv2/opencv.hpp>
-
+#define MAX_DPETH 3
+#define SAMPLE 25.f
 
 // Window size
 glm::vec3 eye;
@@ -31,6 +33,13 @@ std::istream &operator>>(std::istream &is, glm::vec3 &vec){
     return is;
 }
 
+std::mt19937 mt_rand;
+float get_esp(){
+    return (mt_rand() * 10000 % 10) / 5000.f;
+}
+float get_rand(){
+    return (std::abs(int(mt_rand() * 10000) % 100)) / 100.f;
+}
 
 inline Hit firstHit(const Ray &inRay, const std::vector<const Object *> &scene,
     float tMin = 1e-4f, float tMax = std::numeric_limits<float>::infinity()){
@@ -106,13 +115,10 @@ glm::vec3 phong(const Hit &hit, const std::vector<Light> &lights,
 
 
 glm::vec3 path_tracing(Ray ray,
-    std::vector<Sphere> &balls,
-    std::vector<Triangle> &triangles,
-    std::vector<Light> &lights){
-    std::vector<const Object *> scene;
-    scene.reserve(balls.size() + triangles.size());
-    for(const auto &s : balls)      scene.push_back(&s);
-    for(const auto &t : triangles)  scene.push_back(&t);
+    std::vector<const Object *> scene,
+    std::vector<Light> &lights,
+    int depth){
+    if(depth == MAX_DPETH) return glm::vec3{ 0.0f };
 
     Hit h = firstHit(ray, scene);
     if(!h.hit) return glm::vec3(0.0f);
@@ -128,12 +134,35 @@ glm::vec3 path_tracing(Ray ray,
     //     255 * (h.pos.z + 1.0) / 2.0);
     // std::cout << h.pos << std::endl;
     glm::vec3 color = phong(h, lights, scene);
+
+
+    float prob = get_rand();
+
+    if(prob < h.obj->mtl.reflect){
+        glm::vec3 reflect_color{ 0.0f };
+        for(int i = 0; i < SAMPLE; i++){
+            glm::vec3 reflect_vec = glm::reflect(ray.vec, n);
+            Ray reflect_ray = Ray(h.pos, reflect_vec);
+            reflect_color += path_tracing(reflect_ray, scene, lights, depth + 1);
+        }
+        reflect_color = reflect_color / SAMPLE;
+        color = color + reflect_color;
+    }
+
+
     // std::cout << color << std::endl;
     return color;
 }
 
+
+
+
 int main(int argc, char **argv){
     (void) argc; (void) argv;
+
+    std::random_device rd;
+    unsigned int seed = rd();
+    mt_rand = std::mt19937(seed);
 
     if(!glfwInit()){
         std::cerr << "Failed to init GLFW\n";
@@ -279,18 +308,33 @@ int main(int argc, char **argv){
     // ---- OpenCV 影像 (rows=H, cols=W) ----
     cv::Mat img(H, W, CV_8UC3);
 
+    std::vector<const Object *> scene;
+    scene.reserve(balls.size() + triangles.size());
+    for(const auto &s : balls)      scene.push_back(&s);
+    for(const auto &t : triangles)  scene.push_back(&t);
+
+
     for(int j = 0; j < H; ++j){
         for(int i = 0; i < W; ++i){
+            std::cout << "(" << i << ", " << j << ")" << std::endl;
             // 像素中心
-            glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f) + dy * (float(j) + 0.5f);
-            glm::vec3 dir = glm::normalize(pixel_pos - cam_eye);
-            Ray ray(cam_eye, dir);
-            
-            glm::vec3 col = path_tracing(ray, balls, triangles, lights) * 255.f;
+            // std::cout << "==========" << std::endl;
+            glm::vec3 col(0.0f);
+            for(int k = 0; k < SAMPLE; k++){
+                glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f) + dy * (float(j) + 0.5f);
+                glm::vec3 dir = glm::normalize(pixel_pos - cam_eye);
+                glm::vec3 esp = glm::vec3(get_esp(), get_esp(), get_esp());
+                // std::cout << esp << std::endl;
+                dir += esp;
+                dir = glm::normalize(dir);
+                // std::cout << dir << std::endl;
 
-            // 建議先用法向視覺化驗證 (可把這行打開，並略過 col)
-            // col = 0.5f * (glm::normalize(firstHit(ray, {...}).normal) + glm::vec3(1.0f));
+                Ray ray(cam_eye, dir);
 
+                col += path_tracing(ray, scene, lights, 0);
+            }
+            col = (col / SAMPLE) * 255.f;
+            // std::cout << col << std::endl;
             // Clamp & BGR
             col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(255.0f));
             cv::Vec3b &pix = img.at<cv::Vec3b>(j, i);
@@ -303,8 +347,7 @@ int main(int argc, char **argv){
     if(!cv::imwrite("color_output.png", img)){
         std::cerr << "彩色圖片輸出失敗！" << std::endl;
     }
-
-
+    else std::cerr << "Rendering Finish" << std::endl;
 
 
     while(!glfwWindowShouldClose(window)){
