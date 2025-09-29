@@ -1,5 +1,6 @@
 #include "GLinclude.h"
 #include "object.h"
+#include "glsl.h"
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -103,8 +104,8 @@ glm::vec3 phong(const Hit &hit, const std::vector<Light> &lights,
         // Specular（注意入射向量要用 -L）
         glm::vec3 R = glm::reflect(L, N);
         float rv = glm::max(0.0f, glm::dot(R, V));
-        float specPow = (mtl.exp > 0.0f) ? std::pow(rv, mtl.exp) : 0.0f;
-        glm::vec3 specular = mtl.Ks * l.illum * specPow;
+        float spec_pow = (mtl.exp > 0.0f) ? std::pow(rv, mtl.exp) : 0.0f;
+        glm::vec3 specular = mtl.Ks * l.illum * spec_pow;
 
         if(!shadow_hit.hit){
             color += diffuse + specular;
@@ -138,15 +139,24 @@ glm::vec3 path_tracing(Ray ray,
 
     float prob = get_rand();
 
-    if(prob < h.obj->mtl.reflect){
+    if(prob < h.obj->mtl.reflect || 1){
         glm::vec3 reflect_color{ 0.0f };
-        for(int i = 0; i < SAMPLE; i++){
-            glm::vec3 reflect_vec = glm::reflect(ray.vec, n);
-            Ray reflect_ray = Ray(h.pos, reflect_vec);
-            reflect_color += path_tracing(reflect_ray, scene, lights, depth + 1);
-        }
-        reflect_color = reflect_color / SAMPLE;
-        color = color + reflect_color;
+        // for(int i = 0; i < 1; i++){
+        //     glm::vec3 reflect_vec = glm::reflect(ray.vec, n);
+        //     glm::vec3 esp = glm::vec3(get_esp(), get_esp(), get_esp());
+        //     reflect_vec += esp;
+        //     reflect_vec = glm::normalize(reflect_vec);
+        //     Ray reflect_ray = Ray(h.pos, reflect_vec);
+        //     reflect_color += path_tracing(reflect_ray, scene, lights, depth + 1);
+        // }
+        // reflect_color = reflect_color / SAMPLE;
+        // color = color + reflect_color;
+
+        glm::vec3 reflect_vec = glm::reflect(ray.vec, n);
+        Ray reflect_ray = Ray(h.pos, reflect_vec);
+        reflect_color += path_tracing(reflect_ray, scene, lights, depth + 1);
+        color = color + reflect_color * h.obj->mtl.reflect;
+
     }
 
 
@@ -155,6 +165,65 @@ glm::vec3 path_tracing(Ray ray,
 }
 
 
+GLuint tex = 0;
+GLuint vao, vbo;
+Shader *shader;
+GLuint prog = 0;
+void gen_texture(){
+    // --- 放在 main() 開頭初始化完成後、進入渲染前 ---
+// 解析度
+    const int W = resolution.first;
+    const int H = resolution.second;
+
+    // 建立一張 RGB texture 當畫布
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    // 先配好大小（不帶資料）
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, W, H, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+
+    // 全螢幕 quad（NDC）
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    float quad_verts[] = {
+        //   pos      //  uv
+           -1.f, -1.f,  0.f, 0.f,
+            1.f, -1.f,  1.f, 0.f,
+            1.f,  1.f,  1.f, 1.f,
+           -1.f,  1.f,  0.f, 1.f,
+    };
+    GLuint ebo;
+    unsigned int idx[] = { 0,1,2, 0,2,3 };
+
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad_verts), quad_verts, GL_STATIC_DRAW);
+
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
+
+    // 你應該已有簡單的 shader；沒有的話做一個超簡單的：
+    // VS: 把 pos 傳到 clip space，傳 uv
+    // FS: 取樣 texture
+    shader = new Shader("shader/shader.vs", "shader/shader.fs");
+    prog = shader->ID; // 下面有提供
+    glUseProgram(prog);
+    GLint locPos = glGetAttribLocation(prog, "aPos");
+    GLint locUV = glGetAttribLocation(prog, "aUV");
+    glEnableVertexAttribArray(locPos);
+    glVertexAttribPointer(locPos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *) 0);
+    glEnableVertexAttribArray(locUV);
+    glVertexAttribPointer(locUV, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *) (2 * sizeof(float)));
+    glUseProgram(0);
+
+}
+
+int render_array[500 * 500] = {};
 
 
 int main(int argc, char **argv){
@@ -162,7 +231,7 @@ int main(int argc, char **argv){
 
     std::random_device rd;
     unsigned int seed = rd();
-    mt_rand = std::mt19937(seed);
+    mt_rand = std::mt19937(1234);
 
     if(!glfwInit()){
         std::cerr << "Failed to init GLFW\n";
@@ -175,7 +244,7 @@ int main(int argc, char **argv){
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    GLFWwindow *window = glfwCreateWindow(1920, 1080, "OBJ + Tetra with Vertex Colors", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(256, 256, "OBJ + Tetra with Vertex Colors", nullptr, nullptr);
     if(!window){
         std::cerr << "Failed to create window\n";
         glfwTerminate();
@@ -192,8 +261,7 @@ int main(int argc, char **argv){
     // GL state
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
-    glClearColor(0.07f, 0.08f, 0.10f, 1.0f);
-
+    glClearColor(1.f, 1.f, 1.0f, 1.0f);
 
     /*--------------------------
     input
@@ -258,6 +326,17 @@ int main(int argc, char **argv){
         }
     }
 
+    const int W = resolution.first;   // width
+    const int H = resolution.second;  // height
+    const float aspect = float(W) / float(H);
+
+    glViewport(0, 0, 256, 256);
+    glDisable(GL_DEPTH_TEST);
+
+    gen_texture();
+
+    std::cout << "VAO: " << vao << std::endl;
+    std::cout << "program: " << prog << std::endl;
     std::cout << "Eye Position: " << camera.eye << std::endl;
     std::cout << "Screen Info: " << std::endl;
     std::cout << "  Look At: " << camera.look_at << std::endl;
@@ -276,14 +355,11 @@ int main(int argc, char **argv){
         }
         std::cout << "  )" << std::endl;
     }
-    // ---- 解析度/相機基底 ----
-    const int W = resolution.first;   // width
-    const int H = resolution.second;  // height
-    const float aspect = float(W) / float(H);
+
+
 
     auto deg2rad = [](float d){ return d * float(M_PI) / 180.0f; };
-    const float fov_rad = deg2rad(camera.fov);     // <-- 若本來就是弧度，就用 camera.fov
-
+    const float fov_rad = deg2rad(camera.fov);
     const glm::vec3 cam_eye = camera.eye;
     glm::vec3 f = glm::normalize(camera.look_at - camera.eye); // forward
     glm::vec3 up = glm::normalize(camera.view_up);
@@ -301,19 +377,16 @@ int main(int argc, char **argv){
     glm::vec3 LL = center - u * half_h - r * half_w;
     glm::vec3 LR = center - u * half_h + r * half_w;
 
-    // 每像素步進（從 UL 出發）
     glm::vec3 dx = (UR - UL) / float(W);
     glm::vec3 dy = (LL - UL) / float(H);
 
-    // ---- OpenCV 影像 (rows=H, cols=W) ----
-    cv::Mat img(H, W, CV_8UC3);
 
     std::vector<const Object *> scene;
     scene.reserve(balls.size() + triangles.size());
     for(const auto &s : balls)      scene.push_back(&s);
     for(const auto &t : triangles)  scene.push_back(&t);
 
-
+    /*
     for(int j = 0; j < H; ++j){
         for(int i = 0; i < W; ++i){
             std::cout << "(" << i << ", " << j << ")" << std::endl;
@@ -348,13 +421,97 @@ int main(int argc, char **argv){
         std::cerr << "彩色圖片輸出失敗！" << std::endl;
     }
     else std::cerr << "Rendering Finish" << std::endl;
+*/
 
+    std::vector<unsigned char> framebuffer(W * H * 3, 0);
+
+    int pixel_cursor = 0;
+    const int k_pixels_per_frame = 200;
+
+    glUseProgram(prog);
+    glUniform1i(glGetUniformLocation(prog, "uTex"), 0);
+    glUseProgram(0);
+
+    bool is_writed = false;
+
+    for(int i = 0; i < W * H; i++){
+        render_array[i] = i;
+    }
+
+    std::shuffle(render_array, render_array + W * H, mt_rand);
 
     while(!glfwWindowShouldClose(window)){
+        glfwPollEvents();
+
+        // /*
+        int end = std::min(W * H, pixel_cursor + k_pixels_per_frame);
+        for(int p = pixel_cursor; p < end; ++p){
+            int j = render_array[p] / W;              // row
+            int i = render_array[p] % W;              // col
+
+            glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f) + dy * (float(j) + 0.5f);
+            glm::vec3 dir = glm::normalize(pixel_pos - cam_eye);
+
+            Ray ray(cam_eye, dir);
+
+            glm::vec3 col(0.0f);
+
+            for(int k = 0; k < SAMPLE; k++){
+                glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f) + dy * (float(j) + 0.5f);
+                glm::vec3 dir = glm::normalize(pixel_pos - cam_eye);
+                glm::vec3 esp = glm::vec3(get_esp(), get_esp(), get_esp());
+                // std::cout << esp << std::endl;
+                dir += esp;
+                dir = glm::normalize(dir);
+                // std::cout << dir << std::endl;
+
+                Ray ray(cam_eye, dir);
+
+                col += path_tracing(ray, scene, lights, 0);
+            }
+
+            col = col / SAMPLE;
+
+            col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
+            // col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
+
+            size_t idx = (size_t(H - 1 - j) * W + i) * 3;
+            framebuffer[idx + 0] = (unsigned char) (col.r * 255.0f);
+            framebuffer[idx + 1] = (unsigned char) (col.g * 255.0f);
+            framebuffer[idx + 2] = (unsigned char) (col.b * 255.0f);
+        }
+        // std::cout << "update" << std::endl;
+        pixel_cursor = end;
+
+        // */
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RGB, GL_UNSIGNED_BYTE, framebuffer.data());
+
+
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glUseProgram(prog);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glBindVertexArray(vao);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        glUseProgram(0);
 
         glfwSwapBuffers(window);
-        glfwPollEvents();
+        // std::cout << "there" << std::endl;
+
+        if(pixel_cursor >= W * H && !is_writed){
+            std::cout << "Render Finish" << std::endl;
+            is_writed = true;
+            cv::Mat img_rgb(H, W, CV_8UC3, framebuffer.data());
+            cv::Mat img_bgr, img_bgr_Flip;
+
+            cv::cvtColor(img_rgb, img_bgr, cv::COLOR_RGB2BGR);
+            cv::flip(img_bgr, img_bgr_Flip, 0);
+
+            if(!cv::imwrite("color_output.png", img_bgr_Flip)){
+                std::cerr << "彩色圖片輸出失敗！" << std::endl;
+            }
+        }
     }
 
 
