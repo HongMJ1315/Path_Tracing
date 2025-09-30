@@ -30,6 +30,7 @@ find_package(glm REQUIRED)
 find_package(imgui REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(OpenMP REQUIRED)
 
 include_directories("include\\")
 target_include_directories(${MY_EXECUTABLE} PRIVATE "include" ${STB_INCLUDE_DIRS})
@@ -51,6 +52,7 @@ target_link_libraries(${MY_EXECUTABLE} PRIVATE
     imgui::imgui
     Eigen3::Eigen
     ${OpenCV_LIBS}
+    OpenMP::OpenMP_CXX
 )
 
 add_custom_command(TARGET ${MY_EXECUTABLE} POST_BUILD

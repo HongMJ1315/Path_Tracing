@@ -10,8 +10,11 @@
 #include <random>
 #include <corecrt_math_defines.h>
 #include <opencv2/opencv.hpp>
-#define MAX_DPETH 3
+#include <ctime>
+#include <omp.h>
+#define MAX_DPETH 4
 #define SAMPLE 25.f
+#define RENDER_THREADS 5
 
 // Window size
 glm::vec3 eye;
@@ -34,15 +37,25 @@ std::istream &operator>>(std::istream &is, glm::vec3 &vec){
     return is;
 }
 
-std::mt19937 mt_rand;
-float get_esp(){
-    return (mt_rand() * 10000 % 10) / 5000.f;
-}
-float get_rand(){
-    return (std::abs(int(mt_rand() * 10000) % 100)) / 100.f;
+
+inline float rng_uniform01(){
+    thread_local std::mt19937 rng([]{
+        std::random_device rd;
+        unsigned int tid = static_cast<unsigned int>(omp_get_thread_num());
+        return std::mt19937::result_type(rd() ^ (0x9E3779B9u + tid + (tid << 6) + (tid >> 2)));
+    }());
+    thread_local std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    return dist(rng);
 }
 
-inline Hit firstHit(const Ray &inRay, const std::vector<const Object *> &scene,
+inline float get_rand(){
+    return (std::abs(int(rng_uniform01() * 10000) % 100)) / 100.f;
+}                    // [0,1)
+inline float get_esp(){
+    return ((int) (rng_uniform01() * 10000) % 10) / 5000.f;
+}
+
+inline Hit first_hit(const Ray &inRay, const std::vector<const Object *> &scene,
     float tMin = 1e-4f, float tMax = std::numeric_limits<float>::infinity()){
     Ray ray = inRay;
     ray.vec = glm::normalize(ray.vec);
@@ -89,19 +102,16 @@ glm::vec3 phong(const Hit &hit, const std::vector<Light> &lights,
     glm::vec3 color = mtl.Ka;
 
     for(const auto &l : lights){
-        // 約定：l.dir 是「表面 → 光源」
         glm::vec3 L = glm::normalize(l.dir);
 
         Ray shadow_ray = Ray();
         shadow_ray.point = hit.pos;
         shadow_ray.vec = l.dir;
-        Hit shadow_hit = firstHit(shadow_ray, scene);
+        Hit shadow_hit = first_hit(shadow_ray, scene);
 
-        // Diffuse
         float ndotl = glm::max(0.0f, glm::dot(N, L));
         glm::vec3 diffuse = mtl.Kd * l.illum * ndotl;
 
-        // Specular（注意入射向量要用 -L）
         glm::vec3 R = glm::reflect(L, N);
         float rv = glm::max(0.0f, glm::dot(R, V));
         float spec_pow = (mtl.exp > 0.0f) ? std::pow(rv, mtl.exp) : 0.0f;
@@ -111,7 +121,7 @@ glm::vec3 phong(const Hit &hit, const std::vector<Light> &lights,
             color += diffuse + specular;
         }
     }
-    return color; // 寫圖前再做 tone mapping / gamma
+    return color;
 }
 
 
@@ -120,8 +130,7 @@ glm::vec3 path_tracing(Ray ray,
     std::vector<Light> &lights,
     int depth){
     if(depth == MAX_DPETH) return glm::vec3{ 0.0f };
-
-    Hit h = firstHit(ray, scene);
+    Hit h = first_hit(ray, scene);
     if(!h.hit) return glm::vec3(0.0f);
     if(h.kind == ObjKind::Sphere){
         // std::cout << h.pos << std::endl;
@@ -136,29 +145,29 @@ glm::vec3 path_tracing(Ray ray,
     // std::cout << h.pos << std::endl;
     glm::vec3 color = phong(h, lights, scene);
 
-
     float prob = get_rand();
 
-    if(prob < h.obj->mtl.reflect || 1){
-        glm::vec3 reflect_color{ 0.0f };
-        // for(int i = 0; i < 1; i++){
-        //     glm::vec3 reflect_vec = glm::reflect(ray.vec, n);
-        //     glm::vec3 esp = glm::vec3(get_esp(), get_esp(), get_esp());
-        //     reflect_vec += esp;
-        //     reflect_vec = glm::normalize(reflect_vec);
-        //     Ray reflect_ray = Ray(h.pos, reflect_vec);
-        //     reflect_color += path_tracing(reflect_ray, scene, lights, depth + 1);
-        // }
-        // reflect_color = reflect_color / SAMPLE;
-        // color = color + reflect_color;
+    // if(prob < h.obj->mtl.reflect){
+    //     glm::vec3 reflect_color{ 0.0f };
+    //     for(int i = 0; i < SAMPLE; i++){
+    //         glm::vec3 reflect_vec = glm::reflect(ray.vec, n);
+    //         glm::vec3 esp = glm::vec3(get_esp(), get_esp(), get_esp());
+    //         reflect_vec += esp;
+    //         reflect_vec = glm::normalize(reflect_vec);
+    //         Ray reflect_ray = Ray(h.pos, reflect_vec);
+    //         reflect_color += path_tracing(reflect_ray, scene, lights, depth + 1);
+    //     }
+    //     reflect_color = reflect_color / SAMPLE;
+    //     color = color + reflect_color;
+    // }
 
+    if(h.obj->mtl.reflect > ESP){
+        glm::vec3 reflect_color(0.0f);
         glm::vec3 reflect_vec = glm::reflect(ray.vec, n);
         Ray reflect_ray = Ray(h.pos, reflect_vec);
         reflect_color += path_tracing(reflect_ray, scene, lights, depth + 1);
         color = color + reflect_color * h.obj->mtl.reflect;
-
     }
-
 
     // std::cout << color << std::endl;
     return color;
@@ -228,10 +237,7 @@ int render_array[500 * 500] = {};
 
 int main(int argc, char **argv){
     (void) argc; (void) argv;
-
-    std::random_device rd;
-    unsigned int seed = rd();
-    mt_rand = std::mt19937(1234);
+    omp_set_num_threads(RENDER_THREADS);  // 在 main() 一開始設
 
     if(!glfwInit()){
         std::cerr << "Failed to init GLFW\n";
@@ -334,6 +340,11 @@ int main(int argc, char **argv){
     glDisable(GL_DEPTH_TEST);
 
     gen_texture();
+
+#pragma omp parallel
+    {
+        std::cout << "Threads: " << omp_get_num_threads() << std::endl;
+    }
 
     std::cout << "VAO: " << vao << std::endl;
     std::cout << "program: " << prog << std::endl;
@@ -438,13 +449,20 @@ int main(int argc, char **argv){
         render_array[i] = i;
     }
 
+    std::random_device rd;
+    unsigned int seed = rd();
+    std::mt19937 mt_rand = std::mt19937(seed);
     std::shuffle(render_array, render_array + W * H, mt_rand);
+
+    auto start_time = std::chrono::steady_clock::now();
 
     while(!glfwWindowShouldClose(window)){
         glfwPollEvents();
 
         // /*
         int end = std::min(W * H, pixel_cursor + k_pixels_per_frame);
+
+#pragma omp parallel for schedule(dynamic, 128)
         for(int p = pixel_cursor; p < end; ++p){
             int j = render_array[p] / W;              // row
             int i = render_array[p] % W;              // col
@@ -457,6 +475,13 @@ int main(int argc, char **argv){
             glm::vec3 col(0.0f);
 
             for(int k = 0; k < SAMPLE; k++){
+                // auto get_esp = [](){
+                //     std::random_device rd;
+                //     unsigned int seed = rd();
+                //     std::mt19937 mt_rand = std::mt19937(seed);
+                //     return (mt_rand() * 10000 % 10) / 5000.f;
+                // };
+
                 glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f) + dy * (float(j) + 0.5f);
                 glm::vec3 dir = glm::normalize(pixel_pos - cam_eye);
                 glm::vec3 esp = glm::vec3(get_esp(), get_esp(), get_esp());
@@ -473,7 +498,7 @@ int main(int argc, char **argv){
             col = col / SAMPLE;
 
             col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
-            // col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
+            col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
 
             size_t idx = (size_t(H - 1 - j) * W + i) * 3;
             framebuffer[idx + 0] = (unsigned char) (col.r * 255.0f);
@@ -500,6 +525,9 @@ int main(int argc, char **argv){
         // std::cout << "there" << std::endl;
 
         if(pixel_cursor >= W * H && !is_writed){
+            auto end_time = std::chrono::steady_clock::now();
+            auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "Elapsed time: " << diff.count() << " ms" << std::endl;
             std::cout << "Render Finish" << std::endl;
             is_writed = true;
             cv::Mat img_rgb(H, W, CV_8UC3, framebuffer.data());
