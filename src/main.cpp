@@ -1,19 +1,18 @@
 #include "GLinclude.h"
-#include "object.h"
 #include "glsl.h"
+#include "rt.h"
+#include "texture.h"
 #include <iostream>
 #include <fstream>
 #include <vector>
 #include <limits>
 #include <cmath>
 #include <algorithm>
-#include <random>
 #include <corecrt_math_defines.h>
 #include <opencv2/opencv.hpp>
 #include <ctime>
 #include <omp.h>
-#define MAX_DPETH 4
-#define SAMPLE 25.f
+
 #define RENDER_THREADS 5
 
 // Window size
@@ -38,199 +37,7 @@ std::istream &operator>>(std::istream &is, glm::vec3 &vec){
 }
 
 
-inline float rng_uniform01(){
-    thread_local std::mt19937 rng([]{
-        std::random_device rd;
-        unsigned int tid = static_cast<unsigned int>(omp_get_thread_num());
-        return std::mt19937::result_type(rd() ^ (0x9E3779B9u + tid + (tid << 6) + (tid >> 2)));
-    }());
-    thread_local std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-    return dist(rng);
-}
 
-inline float get_rand(){
-    return (std::abs(int(rng_uniform01() * 10000) % 100)) / 100.f;
-}                    // [0,1)
-inline float get_esp(){
-    return ((int) (rng_uniform01() * 10000) % 10) / 5000.f;
-}
-
-inline Hit first_hit(const Ray &inRay, const std::vector<const Object *> &scene,
-    float tMin = 1e-4f, float tMax = std::numeric_limits<float>::infinity()){
-    Ray ray = inRay;
-    ray.vec = glm::normalize(ray.vec);
-
-    Hit best;
-    for(const Object *obj : scene){
-        float t, u, v;
-        if(!obj->check_intersect(ray, t, u, v, tMin, tMax)) continue;
-        if(t < best.t){
-            best.hit = true;
-            best.t = t;
-            best.pos = ray.point + t * ray.vec;
-            best.u = u;
-            best.v = v;
-            best.eye_dir = glm::normalize(ray.vec);
-            best.obj = obj;
-
-            if(dynamic_cast<const Sphere *>(obj))   best.kind = ObjKind::Sphere;
-            else if(dynamic_cast<const Triangle *>(obj)) best.kind = ObjKind::Triangle;
-            else best.kind = ObjKind::Unknown;
-
-            // 法向
-            best.normal = obj->normal_at(best.pos, ray, u, v);
-
-            // 重心 or UV
-            if(best.kind == ObjKind::Triangle){
-                best.bary = glm::vec3(1.0f - u - v, u, v); // (w,u,v)
-            }
-            else if(best.kind == ObjKind::Sphere){
-                best.bary = glm::vec3(u, v, 0.0f);
-            }
-        }
-    }
-    return best;
-}
-
-glm::vec3 phong(const Hit &hit, const std::vector<Light> &lights,
-    const std::vector<const Object *> &scene){
-    const Material &mtl = hit.obj->mtl;
-
-    glm::vec3 N = glm::normalize(hit.normal);
-    glm::vec3 V = glm::normalize(hit.eye_dir);   // 表面 → 眼睛
-
-    glm::vec3 color = mtl.Ka;
-
-    for(const auto &l : lights){
-        glm::vec3 L = glm::normalize(l.dir);
-
-        Ray shadow_ray = Ray();
-        shadow_ray.point = hit.pos;
-        shadow_ray.vec = l.dir;
-        Hit shadow_hit = first_hit(shadow_ray, scene);
-
-        float ndotl = glm::max(0.0f, glm::dot(N, L));
-        glm::vec3 diffuse = mtl.Kd * l.illum * ndotl;
-
-        glm::vec3 R = glm::reflect(L, N);
-        float rv = glm::max(0.0f, glm::dot(R, V));
-        float spec_pow = (mtl.exp > 0.0f) ? std::pow(rv, mtl.exp) : 0.0f;
-        glm::vec3 specular = mtl.Ks * l.illum * spec_pow;
-
-        if(!shadow_hit.hit){
-            color += diffuse + specular;
-        }
-    }
-    return color;
-}
-
-
-glm::vec3 path_tracing(Ray ray,
-    std::vector<const Object *> scene,
-    std::vector<Light> &lights,
-    int depth){
-    if(depth == MAX_DPETH) return glm::vec3{ 0.0f };
-    Hit h = first_hit(ray, scene);
-    if(!h.hit) return glm::vec3(0.0f);
-    if(h.kind == ObjKind::Sphere){
-        // std::cout << h.pos << std::endl;
-        // std::cout << ray.point + ray.vec << std::endl;
-        // std::cout << "====" << std::endl;
-    }
-
-    glm::vec3 n = glm::normalize(h.normal);
-    // glm::vec3 color = glm::vec3(255 * (h.pos.x + 1.0) / 2.0,
-    //     255 * (h.pos.y + 1.0) / 2.0,
-    //     255 * (h.pos.z + 1.0) / 2.0);
-    // std::cout << h.pos << std::endl;
-    glm::vec3 color = phong(h, lights, scene);
-
-    float prob = get_rand();
-
-    // if(prob < h.obj->mtl.reflect){
-    //     glm::vec3 reflect_color{ 0.0f };
-    //     for(int i = 0; i < SAMPLE; i++){
-    //         glm::vec3 reflect_vec = glm::reflect(ray.vec, n);
-    //         glm::vec3 esp = glm::vec3(get_esp(), get_esp(), get_esp());
-    //         reflect_vec += esp;
-    //         reflect_vec = glm::normalize(reflect_vec);
-    //         Ray reflect_ray = Ray(h.pos, reflect_vec);
-    //         reflect_color += path_tracing(reflect_ray, scene, lights, depth + 1);
-    //     }
-    //     reflect_color = reflect_color / SAMPLE;
-    //     color = color + reflect_color;
-    // }
-
-    if(h.obj->mtl.reflect > ESP){
-        glm::vec3 reflect_color(0.0f);
-        glm::vec3 reflect_vec = glm::reflect(ray.vec, n);
-        Ray reflect_ray = Ray(h.pos, reflect_vec);
-        reflect_color += path_tracing(reflect_ray, scene, lights, depth + 1);
-        color = color + reflect_color * h.obj->mtl.reflect;
-    }
-
-    // std::cout << color << std::endl;
-    return color;
-}
-
-
-GLuint tex = 0;
-GLuint vao, vbo;
-Shader *shader;
-GLuint prog = 0;
-void gen_texture(){
-    // --- 放在 main() 開頭初始化完成後、進入渲染前 ---
-// 解析度
-    const int W = resolution.first;
-    const int H = resolution.second;
-
-    // 建立一張 RGB texture 當畫布
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    // 先配好大小（不帶資料）
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, W, H, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
-
-    // 全螢幕 quad（NDC）
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
-
-    float quad_verts[] = {
-        //   pos      //  uv
-           -1.f, -1.f,  0.f, 0.f,
-            1.f, -1.f,  1.f, 0.f,
-            1.f,  1.f,  1.f, 1.f,
-           -1.f,  1.f,  0.f, 1.f,
-    };
-    GLuint ebo;
-    unsigned int idx[] = { 0,1,2, 0,2,3 };
-
-    glGenBuffers(1, &vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(quad_verts), quad_verts, GL_STATIC_DRAW);
-
-    glGenBuffers(1, &ebo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
-
-    // 你應該已有簡單的 shader；沒有的話做一個超簡單的：
-    // VS: 把 pos 傳到 clip space，傳 uv
-    // FS: 取樣 texture
-    shader = new Shader("shader/shader.vs", "shader/shader.fs");
-    prog = shader->ID; // 下面有提供
-    glUseProgram(prog);
-    GLint locPos = glGetAttribLocation(prog, "aPos");
-    GLint locUV = glGetAttribLocation(prog, "aUV");
-    glEnableVertexAttribArray(locPos);
-    glVertexAttribPointer(locPos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *) 0);
-    glEnableVertexAttribArray(locUV);
-    glVertexAttribPointer(locUV, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *) (2 * sizeof(float)));
-    glUseProgram(0);
-
-}
 
 int render_array[500 * 500] = {};
 
@@ -339,12 +146,9 @@ int main(int argc, char **argv){
     glViewport(0, 0, 256, 256);
     glDisable(GL_DEPTH_TEST);
 
-    gen_texture();
+    gen_texture(resolution.first, resolution.second);
 
-#pragma omp parallel
-    {
-        std::cout << "Threads: " << omp_get_num_threads() << std::endl;
-    }
+    GLuint vao = get_vao(), prog = get_shader(), tex = get_texture();
 
     std::cout << "VAO: " << vao << std::endl;
     std::cout << "program: " << prog << std::endl;

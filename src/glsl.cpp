@@ -15,12 +15,12 @@ Shader::Shader(const char *vertex_path, const char *fragment_path){
     char *vert_src = read_source_codes(const_cast<char *>(vertex_path));
     char *frag_src = read_source_codes(const_cast<char *>(fragment_path));
 
-    std::cerr << "Vertex Shader Source:\n" << vert_src << "\n";
+    // std::cerr << "Vertex Shader Source:\n" << vert_src << "\n";
     glShaderSource(vert, 1, &vert_src, NULL);
     glCompileShader(vert);
     print_shader_info_log(vert);
 
-    std::cerr << "Fragment Shader Source:\n" << frag_src << "\n";
+    // std::cerr << "Fragment Shader Source:\n" << frag_src << "\n";
     glShaderSource(frag, 1, &frag_src, NULL);
     glCompileShader(frag);
     print_shader_info_log(frag);

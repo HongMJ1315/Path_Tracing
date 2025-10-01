@@ -5,7 +5,6 @@
 #define ESP 1e-6
 
 // 前置宣告
-struct Ray;
 
 enum class ObjKind{ Unknown, Sphere, Triangle };
 
