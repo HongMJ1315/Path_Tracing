@@ -10,8 +10,14 @@
 #include <algorithm>
 #include <corecrt_math_defines.h>
 #include <opencv2/opencv.hpp>
+#include <opencv2/core/utils/logger.hpp>
 #include <ctime>
 #include <omp.h>
+
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+
 
 #define RENDER_THREADS 5
 
@@ -36,8 +42,60 @@ std::istream &operator>>(std::istream &is, glm::vec3 &vec){
     return is;
 }
 
+void get_camera(int W, int H, float f_mm, Camera &camera,
+    glm::vec3 &UL, glm::vec3 &dx, glm::vec3 &dy,
+    float sensor_w = 36.0f, float sensor_h = 24.0f){
+    auto deg2rad = [](float d){ return d * float(M_PI) / 180.0f; };
+    auto rad2deg = [](float r){ return r * 180.0f / float(M_PI); };
 
+    float vfov = 2.0f * std::atan(sensor_h / (2.0f * f_mm));
+    camera.fov = rad2deg(vfov);
+    const float fov_rad = vfov;
+    const float aspect = float(W) / float(H);
 
+    // 2) 相機座標
+    const glm::vec3 cam_eye = camera.eye;
+    glm::vec3 f = glm::normalize(camera.look_at - camera.eye);
+    glm::vec3 up = glm::normalize(camera.view_up);
+    glm::vec3 r = glm::normalize(glm::cross(f, up));
+    glm::vec3 u = glm::cross(r, f);
+
+    // 3) 影像平面 (距離=1)
+    const float dist = 1.0f;
+    const glm::vec3 C = cam_eye + dist * f;
+    const float half_h = std::tan(0.5f * fov_rad); // 垂直半視角的 tan
+    const float half_w = half_h * aspect;
+
+    UL = C + u * half_h - r * half_w;
+    glm::vec3 UR = C + u * half_h + r * half_w;
+    glm::vec3 LL = C - u * half_h - r * half_w;
+
+    dx = (UR - UL) / float(W);  // 對應像素中心 (x+0.5)
+    dy = (LL - UL) / float(H);  // 對應像素中心 (y+0.5)
+}
+
+inline glm::vec2 concentric_sample_disk(float u1, float u2){
+    // [0,1)^2 -> [-1,1]^2
+    float sx = 2.0f * u1 - 1.0f;
+    float sy = 2.0f * u2 - 1.0f;
+
+    if(sx == 0 && sy == 0) return { 0,0 };
+
+    float r, theta;
+    if(std::abs(sx) > std::abs(sy)){
+        r = sx;
+        theta = (float) M_PI / 4.0f * (sy / sx);
+    }
+    else{
+        r = sy;
+        theta = (float) M_PI / 2.0f - (float) M_PI / 4.0f * (sx / sy);
+    }
+    return { r * std::cos(theta), r * std::sin(theta) };
+}
+
+void update_focus(){
+
+}
 
 int render_array[500 * 500] = {};
 
@@ -45,6 +103,7 @@ int render_array[500 * 500] = {};
 int main(int argc, char **argv){
     (void) argc; (void) argv;
     omp_set_num_threads(RENDER_THREADS);  // 在 main() 一開始設
+    cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_ERROR);
 
     if(!glfwInit()){
         std::cerr << "Failed to init GLFW\n";
@@ -57,7 +116,7 @@ int main(int argc, char **argv){
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    GLFWwindow *window = glfwCreateWindow(256, 256, "OBJ + Tetra with Vertex Colors", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(500, 500, "Ray Tracing", nullptr, nullptr);
     if(!window){
         std::cerr << "Failed to create window\n";
         glfwTerminate();
@@ -71,10 +130,18 @@ int main(int argc, char **argv){
         return -1;
     }
 
+
     // GL state
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glClearColor(1.f, 1.f, 1.0f, 1.0f);
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO &io = ImGui::GetIO();
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 400");
 
     /*--------------------------
     input
@@ -141,9 +208,8 @@ int main(int argc, char **argv){
 
     const int W = resolution.first;   // width
     const int H = resolution.second;  // height
-    const float aspect = float(W) / float(H);
 
-    glViewport(0, 0, 256, 256);
+    glViewport(0, 0, 600, 400);
     glDisable(GL_DEPTH_TEST);
 
     gen_texture(resolution.first, resolution.second);
@@ -173,70 +239,11 @@ int main(int argc, char **argv){
 
 
 
-    auto deg2rad = [](float d){ return d * float(M_PI) / 180.0f; };
-    const float fov_rad = deg2rad(camera.fov);
-    const glm::vec3 cam_eye = camera.eye;
-    glm::vec3 f = glm::normalize(camera.look_at - camera.eye); // forward
-    glm::vec3 up = glm::normalize(camera.view_up);
-    glm::vec3 r = glm::normalize(glm::cross(f, up));           // right
-    glm::vec3 u = glm::cross(r, f);                            // true up
-
-    // ---- 影像平面四角（dist=1） ----
-    const float dist = 1.0f;
-    const glm::vec3 center = cam_eye + dist * f;
-    const float half_h = std::tan(0.5f * fov_rad); // vertical fov
-    const float half_w = half_h * aspect;
-
-    glm::vec3 UL = center + u * half_h - r * half_w;
-    glm::vec3 UR = center + u * half_h + r * half_w;
-    glm::vec3 LL = center - u * half_h - r * half_w;
-    glm::vec3 LR = center - u * half_h + r * half_w;
-
-    glm::vec3 dx = (UR - UL) / float(W);
-    glm::vec3 dy = (LL - UL) / float(H);
-
 
     std::vector<const Object *> scene;
     scene.reserve(balls.size() + triangles.size());
     for(const auto &s : balls)      scene.push_back(&s);
     for(const auto &t : triangles)  scene.push_back(&t);
-
-    /*
-    for(int j = 0; j < H; ++j){
-        for(int i = 0; i < W; ++i){
-            std::cout << "(" << i << ", " << j << ")" << std::endl;
-            // 像素中心
-            // std::cout << "==========" << std::endl;
-            glm::vec3 col(0.0f);
-            for(int k = 0; k < SAMPLE; k++){
-                glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f) + dy * (float(j) + 0.5f);
-                glm::vec3 dir = glm::normalize(pixel_pos - cam_eye);
-                glm::vec3 esp = glm::vec3(get_esp(), get_esp(), get_esp());
-                // std::cout << esp << std::endl;
-                dir += esp;
-                dir = glm::normalize(dir);
-                // std::cout << dir << std::endl;
-
-                Ray ray(cam_eye, dir);
-
-                col += path_tracing(ray, scene, lights, 0);
-            }
-            col = (col / SAMPLE) * 255.f;
-            // std::cout << col << std::endl;
-            // Clamp & BGR
-            col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(255.0f));
-            cv::Vec3b &pix = img.at<cv::Vec3b>(j, i);
-            pix[0] = (uchar) col.z; // B
-            pix[1] = (uchar) col.y; // G
-            pix[2] = (uchar) col.x; // R
-        }
-    }
-
-    if(!cv::imwrite("color_output.png", img)){
-        std::cerr << "彩色圖片輸出失敗！" << std::endl;
-    }
-    else std::cerr << "Rendering Finish" << std::endl;
-*/
 
     std::vector<unsigned char> framebuffer(W * H * 3, 0);
 
@@ -253,17 +260,58 @@ int main(int argc, char **argv){
         render_array[i] = i;
     }
 
+    float F = 50, A = 32;
+    float last_F = F, last_A = A;
+    glm::vec3 UL, dx, dy;
+    const glm::vec3 cam_eye = camera.eye;
+    get_camera(W, H, F, camera, UL, dx, dy);
+
+    glm::vec3 camF = glm::normalize(camera.look_at - camera.eye);
+    glm::vec3 camR = glm::normalize(glm::cross(camF, glm::normalize(camera.view_up)));
+    glm::vec3 camU = glm::cross(camR, camF);
+
+    float focus_dist = glm::length(camera.look_at - camera.eye);
+    float last_fd = focus_dist;
+
+    float lens_mm = F / A * 0.5f;    // mm;
+
     std::random_device rd;
     unsigned int seed = rd();
     std::mt19937 mt_rand = std::mt19937(seed);
     std::shuffle(render_array, render_array + W * H, mt_rand);
 
     auto start_time = std::chrono::steady_clock::now();
-
     while(!glfwWindowShouldClose(window)){
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
         glfwPollEvents();
 
+        ImGui::Begin("F and F/");
+        ImGui::SliderFloat("F", &F, 14.f, 200.0f);
+        ImGui::SliderFloat("F/", &A, 1.4f, 32.f);
+        ImGui::SliderFloat("Focus Dist", &focus_dist, 0.1f, 10.0f); // 可視需求調整範圍
+
+        ImGui::End();
         // /*
+        if(last_A != A || last_F != F || last_fd != focus_dist){
+            pixel_cursor = 0;
+            is_writed = 0;
+            last_A = A; last_F = F; last_fd = focus_dist;
+            std::fill(framebuffer.begin(), framebuffer.end(), 0);
+
+            get_camera(W, H, F, camera, UL, dx, dy);
+
+            camF = glm::normalize(camera.look_at - camera.eye);
+            camR = glm::normalize(glm::cross(camF, glm::normalize(camera.view_up)));
+            camU = glm::cross(camR, camF);
+            lens_mm = F / A * 0.5f;
+
+            start_time = std::chrono::steady_clock::now();
+        }
+
+
         int end = std::min(W * H, pixel_cursor + k_pixels_per_frame);
 
 #pragma omp parallel for schedule(dynamic, 128)
@@ -271,30 +319,28 @@ int main(int argc, char **argv){
             int j = render_array[p] / W;              // row
             int i = render_array[p] % W;              // col
 
-            glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f) + dy * (float(j) + 0.5f);
-            glm::vec3 dir = glm::normalize(pixel_pos - cam_eye);
-
-            Ray ray(cam_eye, dir);
-
             glm::vec3 col(0.0f);
 
+            float lens_radius = (F / A) * 0.5f * 0.1f; // 光圈半徑 = 鏡頭口徑的一半
+            // std::cout << lens_radius << std::endl;
             for(int k = 0; k < SAMPLE; k++){
-                // auto get_esp = [](){
-                //     std::random_device rd;
-                //     unsigned int seed = rd();
-                //     std::mt19937 mt_rand = std::mt19937(seed);
-                //     return (mt_rand() * 10000 % 10) / 5000.f;
-                // };
+                float jx = rng_uniform01() - 0.5f;
+                float jy = rng_uniform01() - 0.5f;
 
-                glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f) + dy * (float(j) + 0.5f);
-                glm::vec3 dir = glm::normalize(pixel_pos - cam_eye);
-                glm::vec3 esp = glm::vec3(get_esp(), get_esp(), get_esp());
-                // std::cout << esp << std::endl;
-                dir += esp;
-                dir = glm::normalize(dir);
-                // std::cout << dir << std::endl;
+                glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f + jx) + dy * (float(j) + 0.5f + jy);
 
-                Ray ray(cam_eye, dir);
+                glm::vec3 pin_dir = glm::normalize(pixel_pos - camera.eye);
+
+                float t_focus = focus_dist / glm::dot(pin_dir, camF);
+                glm::vec3 focus_point = camera.eye + pin_dir * t_focus;
+
+                glm::vec2 disk = concentric_sample_disk(rng_uniform01(), rng_uniform01());
+                glm::vec3 lens_offset = (disk.x * camR + disk.y * camU) * lens_radius;
+
+                glm::vec3 ray_origin = camera.eye + lens_offset;
+                glm::vec3 ray_dir = glm::normalize(focus_point - ray_origin);
+
+                Ray ray(ray_origin, ray_dir);
 
                 col += path_tracing(ray, scene, lights, 0);
             }
@@ -325,6 +371,9 @@ int main(int argc, char **argv){
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         glUseProgram(0);
 
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
         glfwSwapBuffers(window);
         // std::cout << "there" << std::endl;
 
@@ -346,7 +395,10 @@ int main(int argc, char **argv){
         }
     }
 
-
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    glfwDestroyWindow(window);
     glfwTerminate();
     return 0;
 }

@@ -14,6 +14,7 @@ struct Material{
     glm::vec3 Ks{ 0.0f };   // specular
     float exp{ 32.0f };     // shininess
     float reflect{ 0.0f };  // reflectivity
+    float refract{ 0.0f };  // reflectivity
 };
 
 struct Light{

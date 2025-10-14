@@ -2,7 +2,7 @@
 #include "rng.h"
 #include <vector>
 
-#define MAX_DPETH 10
+#define MAX_DPETH 2
 #define SAMPLE 25.f
 
 
