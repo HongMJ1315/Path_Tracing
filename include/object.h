@@ -1,5 +1,6 @@
 #include <limits>
 #include <glm/glm.hpp>
+#include <vector>
 #include "ray.h"
 
 #define ESP 1e-6
@@ -25,6 +26,7 @@ struct Light{
 class Object{
 public:
     Material mtl;
+    int obj_id;
     virtual ~Object() = default;
 
     virtual bool check_intersect(const Ray &ray, float &t, float &u, float &v,
@@ -73,4 +75,14 @@ struct Hit{
     float u = 0.0f, v = 0.0f;
     const Object *obj = nullptr;
     ObjKind kind = ObjKind::Unknown;
+};
+
+class AABB{
+public:
+    glm::vec3 min = { 99999.f, 99999.f, 99999.f },
+        max = { -99999.f, -99999.f, -99999.f };
+    std::vector<Object *> objs;
+    void add_obj(Object *obj);
+    bool intersectAABB(const Ray &r,
+        float tMin = 1e-4, float tMax = std::numeric_limits<float>::infinity());
 };

@@ -13,6 +13,7 @@
 #include <opencv2/core/utils/logger.hpp>
 #include <ctime>
 #include <omp.h>
+#include <map>s
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -32,46 +33,39 @@ struct Camera{
     float fov;
 };
 
-std::ostream &operator<<(std::ostream &os, const glm::vec3 vec){
-    os << "(" << vec.x << ", " << vec.y << ", " << vec.z << ")";
-    return os;
-}
 
-std::istream &operator>>(std::istream &is, glm::vec3 &vec){
-    is >> vec.x >> vec.y >> vec.z;
-    return is;
-}
-
+//run type = 0 Use FOV, type = 1 Use f_mm 
 void get_camera(int W, int H, float f_mm, Camera &camera,
-    glm::vec3 &UL, glm::vec3 &dx, glm::vec3 &dy,
+    glm::vec3 &UL, glm::vec3 &dx, glm::vec3 &dy, bool run_type,
     float sensor_w = 36.0f, float sensor_h = 24.0f){
     auto deg2rad = [](float d){ return d * float(M_PI) / 180.0f; };
     auto rad2deg = [](float r){ return r * 180.0f / float(M_PI); };
+    float vfov = deg2rad(camera.fov);
+    if(run_type){
 
-    float vfov = 2.0f * std::atan(sensor_h / (2.0f * f_mm));
-    camera.fov = rad2deg(vfov);
+        vfov = 2.0f * std::atan(sensor_h / (2.0f * f_mm));
+        camera.fov = rad2deg(vfov);
+    }
     const float fov_rad = vfov;
     const float aspect = float(W) / float(H);
 
-    // 2) 相機座標
     const glm::vec3 cam_eye = camera.eye;
     glm::vec3 f = glm::normalize(camera.look_at - camera.eye);
     glm::vec3 up = glm::normalize(camera.view_up);
     glm::vec3 r = glm::normalize(glm::cross(f, up));
     glm::vec3 u = glm::cross(r, f);
 
-    // 3) 影像平面 (距離=1)
     const float dist = 1.0f;
     const glm::vec3 C = cam_eye + dist * f;
-    const float half_h = std::tan(0.5f * fov_rad); // 垂直半視角的 tan
+    const float half_h = std::tan(0.5f * fov_rad);
     const float half_w = half_h * aspect;
 
     UL = C + u * half_h - r * half_w;
     glm::vec3 UR = C + u * half_h + r * half_w;
     glm::vec3 LL = C - u * half_h - r * half_w;
 
-    dx = (UR - UL) / float(W);  // 對應像素中心 (x+0.5)
-    dy = (LL - UL) / float(H);  // 對應像素中心 (y+0.5)
+    dx = (UR - UL) / float(W);
+    dy = (LL - UL) / float(H);
 }
 
 inline glm::vec2 concentric_sample_disk(float u1, float u2){
@@ -93,13 +87,9 @@ inline glm::vec2 concentric_sample_disk(float u1, float u2){
     return { r * std::cos(theta), r * std::sin(theta) };
 }
 
-void update_focus(){
-
-}
-
 int render_array[500 * 500] = {};
 
-
+std::map<int, AABB> groups;
 int main(int argc, char **argv){
     (void) argc; (void) argv;
     omp_set_num_threads(RENDER_THREADS);  // 在 main() 一開始設
@@ -153,6 +143,8 @@ int main(int argc, char **argv){
     Camera camera;
     char t;
     Material mtl;
+    int group_id = 0;
+    int obj_id = 0;
     while(input >> t){
         if(t == 'E'){
             float x, y, z;
@@ -170,22 +162,27 @@ int main(int argc, char **argv){
             // std::cout << "read R" << std::endl;
         }
         else if(t == 'S'){
-            Sphere s;
-            input >> s.center >> s.r;
-            s.scale = glm::vec3(1, 1, 1);
-            s.mtl = mtl;
-            balls.push_back(s);
+            Sphere *s = new Sphere;
+            input >> s->center >> s->r;
+            s->scale = glm::vec3(1, 1, 1);
+            s->mtl = mtl;
+            s->obj_id = obj_id++;
+            groups[group_id].add_obj(s);
+            // balls.push_back(s);
             // std::cout << "read S" << std::endl;
         }
         else if(t == 'T'){
-            Triangle tri;
+            Triangle *tri = new Triangle;
             glm::vec3 vert;
             for(int i = 0; i < 3; i++){
                 input >> vert;
-                tri.vert[i] = vert;
+                tri->vert[i] = vert;
             }
-            tri.mtl = mtl;
-            triangles.push_back(tri);
+            tri->mtl = mtl;
+            tri->obj_id = obj_id++;
+
+            groups[group_id].add_obj(tri);
+            // triangles.push_back(tri);
             // std::cout << "read T" << std::endl;
         }
         else if(t == 'M'){
@@ -204,17 +201,30 @@ int main(int argc, char **argv){
             input >> light.dir;
             lights.push_back(light);
         }
+        else if(t == 'G'){
+            input >> group_id;
+        }
     }
 
     const int W = resolution.first;   // width
     const int H = resolution.second;  // height
 
-    glViewport(0, 0, 600, 400);
+    glViewport(0, 0, 600, 600);
     glDisable(GL_DEPTH_TEST);
 
     gen_texture(resolution.first, resolution.second);
 
     GLuint vao = get_vao(), prog = get_shader(), tex = get_texture();
+
+    int ball_cnt = 0, tri_cnt = 0;
+    for(auto g : groups){
+        for(auto i : g.second.objs){
+            const Sphere *sph = dynamic_cast<const Sphere *>(i);
+            const Triangle *tri = dynamic_cast<const Triangle *>(i);
+            if(sph) ball_cnt++;
+            else tri_cnt++;
+        }
+    }
 
     std::cout << "VAO: " << vao << std::endl;
     std::cout << "program: " << prog << std::endl;
@@ -224,18 +234,28 @@ int main(int argc, char **argv){
     std::cout << "  View Up: " << camera.view_up << std::endl;
     std::cout << "  FOV: " << camera.fov << std::endl;
     std::cout << "Ball:" << std::endl;
-    for(auto b : balls){
-        std::cout << "  Location: " << b.center << std::endl;
-        std::cout << "  R: " << b.r << std::endl;
-    }
+    std::cout << ball_cnt << std::endl;
+
+    // for(auto b : balls){
+    //     std::cout << "  Location: " << b.center << std::endl;
+    //     std::cout << "  R: " << b.r << std::endl;
+    // }
     std::cout << "Trainagle:" << std::endl;
-    for(auto t : triangles){
-        std::cout << "  Vertex: (" << std::endl;
-        for(int i = 0; i < 3; i++){
-            std::cout << "    vertex " << i << ": " << t.vert[i] << std::endl;
-        }
-        std::cout << "  )" << std::endl;
+    std::cout << tri_cnt << std::endl;
+
+    std::cout << "Bounding location: " << std::endl;
+    for(auto i : groups){
+        std::cout << i.second.min << std::endl;
+        std::cout << i.second.max << std::endl;
+        std::cout << std::endl;
     }
+    // for(auto t : triangles){
+    //     std::cout << "  Vertex: (" << std::endl;
+    //     for(int i = 0; i < 3; i++){
+    //         std::cout << "    vertex " << i << ": " << t.vert[i] << std::endl;
+    //     }
+    //     std::cout << "  )" << std::endl;
+    // }
 
 
 
@@ -248,7 +268,7 @@ int main(int argc, char **argv){
     std::vector<unsigned char> framebuffer(W * H * 3, 0);
 
     int pixel_cursor = 0;
-    const int k_pixels_per_frame = 200;
+    const int k_pixels_per_frame = 50;
 
     glUseProgram(prog);
     glUniform1i(glGetUniformLocation(prog, "uTex"), 0);
@@ -256,15 +276,20 @@ int main(int argc, char **argv){
 
     bool is_writed = false;
 
+    bool is_depth = false;
+    bool last_is_depth = is_depth;
+
     for(int i = 0; i < W * H; i++){
         render_array[i] = i;
     }
+
+    Camera ori_cam = camera;
 
     float F = 50, A = 32;
     float last_F = F, last_A = A;
     glm::vec3 UL, dx, dy;
     const glm::vec3 cam_eye = camera.eye;
-    get_camera(W, H, F, camera, UL, dx, dy);
+    get_camera(W, H, F, camera, UL, dx, dy, is_depth);
 
     glm::vec3 camF = glm::normalize(camera.look_at - camera.eye);
     glm::vec3 camR = glm::normalize(glm::cross(camF, glm::normalize(camera.view_up)));
@@ -292,22 +317,27 @@ int main(int argc, char **argv){
         ImGui::SliderFloat("F", &F, 14.f, 200.0f);
         ImGui::SliderFloat("F/", &A, 1.4f, 32.f);
         ImGui::SliderFloat("Focus Dist", &focus_dist, 0.1f, 10.0f); // 可視需求調整範圍
+        ImGui::Checkbox("Depth Field", &is_depth);
 
         ImGui::End();
         // /*
-        if(last_A != A || last_F != F || last_fd != focus_dist){
+        if(is_depth && (last_A != A || last_F != F || last_fd != focus_dist)){
             pixel_cursor = 0;
             is_writed = 0;
             last_A = A; last_F = F; last_fd = focus_dist;
             std::fill(framebuffer.begin(), framebuffer.end(), 0);
 
-            get_camera(W, H, F, camera, UL, dx, dy);
+            get_camera(W, H, F, camera, UL, dx, dy, 1);
 
-            camF = glm::normalize(camera.look_at - camera.eye);
-            camR = glm::normalize(glm::cross(camF, glm::normalize(camera.view_up)));
-            camU = glm::cross(camR, camF);
-            lens_mm = F / A * 0.5f;
+            start_time = std::chrono::steady_clock::now();
+        }
+        else if(is_depth != last_is_depth){
+            pixel_cursor = 0;
+            is_writed = 0;
+            std::fill(framebuffer.begin(), framebuffer.end(), 0);
 
+            last_is_depth = is_depth;
+            get_camera(W, H, F, ori_cam, UL, dx, dy, 0);
             start_time = std::chrono::steady_clock::now();
         }
 
@@ -321,30 +351,45 @@ int main(int argc, char **argv){
 
             glm::vec3 col(0.0f);
 
-            float lens_radius = (F / A) * 0.5f * 0.1f; // 光圈半徑 = 鏡頭口徑的一半
-            // std::cout << lens_radius << std::endl;
-            for(int k = 0; k < SAMPLE; k++){
-                float jx = rng_uniform01() - 0.5f;
-                float jy = rng_uniform01() - 0.5f;
+            if(is_depth){
+                float lens_radius = (F / A) * 0.5f * 0.1f; // 光圈半徑 = 鏡頭口徑的一半
+                // std::cout << lens_radius << std::endl;
+                for(int k = 0; k < SAMPLE; k++){
+                    float jx = rng_uniform01() - 0.5f;
+                    float jy = rng_uniform01() - 0.5f;
 
-                glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f + jx) + dy * (float(j) + 0.5f + jy);
+                    glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f + jx) + dy * (float(j) + 0.5f + jy);
 
-                glm::vec3 pin_dir = glm::normalize(pixel_pos - camera.eye);
+                    glm::vec3 pin_dir = glm::normalize(pixel_pos - camera.eye);
 
-                float t_focus = focus_dist / glm::dot(pin_dir, camF);
-                glm::vec3 focus_point = camera.eye + pin_dir * t_focus;
+                    float t_focus = focus_dist / glm::dot(pin_dir, camF);
+                    glm::vec3 focus_point = camera.eye + pin_dir * t_focus;
 
-                glm::vec2 disk = concentric_sample_disk(rng_uniform01(), rng_uniform01());
-                glm::vec3 lens_offset = (disk.x * camR + disk.y * camU) * lens_radius;
+                    glm::vec2 disk = concentric_sample_disk(rng_uniform01(), rng_uniform01());
+                    glm::vec3 lens_offset = (disk.x * camR + disk.y * camU) * lens_radius;
 
-                glm::vec3 ray_origin = camera.eye + lens_offset;
-                glm::vec3 ray_dir = glm::normalize(focus_point - ray_origin);
+                    glm::vec3 ray_origin = camera.eye + lens_offset;
+                    glm::vec3 ray_dir = glm::normalize(focus_point - ray_origin);
 
-                Ray ray(ray_origin, ray_dir);
+                    Ray ray(ray_origin, ray_dir);
 
-                col += path_tracing(ray, scene, lights, 0);
+                    col += path_tracing(ray, groups, lights, 0);
+                }
             }
+            else{
+                for(int k = 0; k < SAMPLE; k++){
+                    // std::cout << ori_cam.fov << std::endl;
+                    float jx = rng_uniform01() - 0.5f;
+                    float jy = rng_uniform01() - 0.5f;
+                    glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f + jx) + dy * (float(j) + 0.5f + jy);
 
+                    glm::vec3 ray_dir = glm::normalize(pixel_pos - ori_cam.eye);
+                    Ray ray(ori_cam.eye, ray_dir);
+
+                    col += path_tracing(ray, groups, lights, 0);
+                }
+
+            }
             col = col / SAMPLE;
 
             col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));

@@ -85,3 +85,48 @@ glm::vec3 Triangle::normal_at(const glm::vec3 &, const Ray &ray,
     if(glm::dot(n, ray.vec) > 0.0f) n = -n;
     return n;
 }
+
+bool AABB::intersectAABB(const Ray &r, float tmin, float tmax){
+    constexpr float BBOX_EPS = 1e-6f;
+
+    for(int a = 0; a < 3; ++a){
+        if(max[a] - min[a] < BBOX_EPS){
+            min[a] -= 0.5f * BBOX_EPS;
+            max[a] += 0.5f * BBOX_EPS;
+        }
+        float invD = 1.0f / r.vec[a];
+        float t0 = (this->min[a] - r.point[a]) * invD;
+        float t1 = (this->max[a] - r.point[a]) * invD;
+        if(invD < 0) std::swap(t0, t1);
+        tmin = t0 > tmin ? t0 : tmin;
+        tmax = t1 < tmax ? t1 : tmax;
+        if(tmax <= tmin) return false;
+    }
+    return true;
+}
+
+void AABB::add_obj(Object *obj){
+    const Sphere *sph = dynamic_cast<const Sphere *>(obj);
+    const Triangle *tri = dynamic_cast<const Triangle *>(obj);
+    if(sph){
+        Sphere ball = *sph;
+        min.x = std::min({ min.x, ball.center.x + ball.r, ball.center.x - ball.r });
+        min.y = std::min({ min.y, ball.center.y + ball.r, ball.center.y - ball.r });
+        min.z = std::min({ min.z, ball.center.z + ball.r, ball.center.z - ball.r });
+        max.x = std::max({ max.x, ball.center.x + ball.r, ball.center.x - ball.r });
+        max.y = std::max({ max.y, ball.center.y + ball.r, ball.center.y - ball.r });
+        max.z = std::max({ max.z, ball.center.z + ball.r, ball.center.z - ball.r });
+    }
+    else{
+        Triangle trian = *tri;
+        for(int i = 0; i < 3; i++){
+            min.x = std::min(min.x, trian.vert[i].x);
+            min.y = std::min(min.y, trian.vert[i].y);
+            min.z = std::min(min.z, trian.vert[i].z);
+            max.x = std::max(max.x, trian.vert[i].x);
+            max.y = std::max(max.y, trian.vert[i].y);
+            max.z = std::max(max.z, trian.vert[i].z);
+        }
+    }
+    this->objs.push_back(obj);
+}
