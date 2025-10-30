@@ -13,17 +13,17 @@ std::istream &operator>>(std::istream &is, glm::vec3 &vec){
     return is;
 }
 
-inline Hit first_hit(const Ray &inRay, const std::map<int, AABB> &groups,
+inline Hit first_hit(Ray &inRay, std::map<int, AABB> &groups,
     float tMin = 1e-4f, float tMax = std::numeric_limits<float>::infinity()){
     Ray ray = inRay;
     ray.vec = glm::normalize(ray.vec);
 
     Hit best;
-    for(const auto g : groups){
-        AABB box = g.second;
-        if(box.intersectAABB(ray)){
-            std::vector<Object *> scene = box.objs;
-            for(const Object *obj : scene){
+    for(auto &g : groups){
+        AABB *box = &(g.second);
+        if(box->intersectAABB(ray)){
+            std::vector<Object *> *scene = &(box->objs);
+            for(Object *obj : *scene){
                 float t, u, v;
                 if(!obj->check_intersect(ray, t, u, v, tMin, tMax)) continue;
                 if(t < best.t){
@@ -56,8 +56,8 @@ inline Hit first_hit(const Ray &inRay, const std::map<int, AABB> &groups,
     return best;
 }
 
-glm::vec3 phong(const Hit &hit, const std::vector<Light> &lights,
-    const std::map<int, AABB> &groups){
+glm::vec3 phong(Hit &hit,std::vector<Light> &lights,
+    std::map<int, AABB> &groups){
     const Material &mtl = hit.obj->mtl;
 
     glm::vec3 N = glm::normalize(hit.normal);
@@ -90,7 +90,7 @@ glm::vec3 phong(const Hit &hit, const std::vector<Light> &lights,
 
 
 glm::vec3 path_tracing(Ray ray,
-    const std::map<int, AABB> &groups,
+    std::map<int, AABB> &groups,
     std::vector<Light> &lights,
     int depth){
     if(depth == MAX_DPETH) return glm::vec3{ 0.0f };

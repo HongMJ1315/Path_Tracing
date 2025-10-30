@@ -13,7 +13,7 @@
 #include <opencv2/core/utils/logger.hpp>
 #include <ctime>
 #include <omp.h>
-#include <map>s
+#include <map>
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -21,6 +21,7 @@
 
 
 #define RENDER_THREADS 5
+#define GROUPING 0
 
 // Window size
 glm::vec3 eye;
@@ -87,12 +88,12 @@ inline glm::vec2 concentric_sample_disk(float u1, float u2){
     return { r * std::cos(theta), r * std::sin(theta) };
 }
 
-int render_array[500 * 500] = {};
+int render_array[600 * 600] = {};
 
 std::map<int, AABB> groups;
 int main(int argc, char **argv){
     (void) argc; (void) argv;
-    omp_set_num_threads(RENDER_THREADS);  // 在 main() 一開始設
+    omp_set_num_threads(RENDER_THREADS);
     cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_ERROR);
 
     if(!glfwInit()){
@@ -167,7 +168,11 @@ int main(int argc, char **argv){
             s->scale = glm::vec3(1, 1, 1);
             s->mtl = mtl;
             s->obj_id = obj_id++;
-            groups[group_id].add_obj(s);
+            // groups[group_id].add_obj(s);
+            if(GROUPING)
+                groups[group_id].add_obj(s);
+            else
+                groups[group_id++].add_obj(s);
             // balls.push_back(s);
             // std::cout << "read S" << std::endl;
         }
@@ -180,8 +185,10 @@ int main(int argc, char **argv){
             }
             tri->mtl = mtl;
             tri->obj_id = obj_id++;
-
-            groups[group_id].add_obj(tri);
+            if(GROUPING)
+                groups[group_id].add_obj(tri);
+            else
+                groups[group_id++].add_obj(tri);
             // triangles.push_back(tri);
             // std::cout << "read T" << std::endl;
         }
@@ -201,8 +208,16 @@ int main(int argc, char **argv){
             input >> light.dir;
             lights.push_back(light);
         }
-        else if(t == 'G'){
+        else if(t == 'G' && GROUPING){
             input >> group_id;
+        }
+        else if(t == '/'){
+            input >> t;
+            if(t == '/'){
+                std::string trash;
+                std::getline(input, trash);
+                continue;
+            }
         }
     }
 
@@ -243,12 +258,13 @@ int main(int argc, char **argv){
     std::cout << "Trainagle:" << std::endl;
     std::cout << tri_cnt << std::endl;
 
-    std::cout << "Bounding location: " << std::endl;
-    for(auto i : groups){
-        std::cout << i.second.min << std::endl;
-        std::cout << i.second.max << std::endl;
-        std::cout << std::endl;
-    }
+    // std::cout << "Bounding location: " << std::endl;
+    // for(auto i : groups){
+    //     std::cout << i.second.min << std::endl;
+    //     std::cout << i.second.max << std::endl;
+    //     std::cout << i.second.objs.size() << std::endl;
+    //     std::cout << std::endl;
+    // }
     // for(auto t : triangles){
     //     std::cout << "  Vertex: (" << std::endl;
     //     for(int i = 0; i < 3; i++){
@@ -352,7 +368,7 @@ int main(int argc, char **argv){
             glm::vec3 col(0.0f);
 
             if(is_depth){
-                float lens_radius = (F / A) * 0.5f * 0.1f; // 光圈半徑 = 鏡頭口徑的一半
+                float lens_radius = (F / A) * 0.5f * 0.1f;
                 // std::cout << lens_radius << std::endl;
                 for(int k = 0; k < SAMPLE; k++){
                     float jx = rng_uniform01() - 0.5f;

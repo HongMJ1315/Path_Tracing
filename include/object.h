@@ -29,12 +29,12 @@ public:
     int obj_id;
     virtual ~Object() = default;
 
-    virtual bool check_intersect(const Ray &ray, float &t, float &u, float &v,
+    virtual bool check_intersect(Ray &ray, float &t, float &u, float &v,
         float tMin = 1e-4f,
-        float tMax = std::numeric_limits<float>::infinity()) const = 0;
+        float tMax = std::numeric_limits<float>::infinity()) = 0;
 
-    virtual glm::vec3 normal_at(const glm::vec3 &P, const Ray &ray,
-        float u, float v) const = 0;
+    virtual glm::vec3 normal_at(glm::vec3 &P,  Ray &ray,
+        float u, float v) = 0;
 };
 
 class Sphere : public Object{
@@ -43,26 +43,26 @@ public:
     glm::vec3 center{ 0.0f };
     glm::vec3 scale{ 1.0f, 1.0f, 1.0f };
 
-    bool check_intersect(const Ray &ray, float &t, float &u, float &v,
+    bool check_intersect(Ray &ray, float &t, float &u, float &v,
         float tMin = 1e-4f,
-        float tMax = std::numeric_limits<float>::infinity()) const override;
+        float tMax = std::numeric_limits<float>::infinity())override;
 
-    glm::vec3 normal_at(const glm::vec3 &P, const Ray &ray,
-        float u, float v) const override;
+    glm::vec3 normal_at(glm::vec3 &P, Ray &ray,
+        float u, float v) override;
 };
 
 class Triangle : public Object{
 public:
     glm::vec3 vert[3];
 
-    glm::vec3 geom_normal() const;
+    glm::vec3 geom_normal();
 
-    bool check_intersect(const Ray &ray, float &t, float &u, float &v,
+    bool check_intersect(Ray &ray, float &t, float &u, float &v,
         float tMin = 1e-4f,
-        float tMax = std::numeric_limits<float>::infinity()) const override;
+        float tMax = std::numeric_limits<float>::infinity()) override;
 
-    glm::vec3 normal_at(const glm::vec3 &P, const Ray &ray,
-        float u, float v) const override;
+    glm::vec3 normal_at(glm::vec3 &P, Ray &ray,
+        float u, float v) override;
 };
 
 struct Hit{
@@ -83,6 +83,6 @@ public:
         max = { -99999.f, -99999.f, -99999.f };
     std::vector<Object *> objs;
     void add_obj(Object *obj);
-    bool intersectAABB(const Ray &r,
+    bool intersectAABB(Ray &r,
         float tMin = 1e-4, float tMax = std::numeric_limits<float>::infinity());
 };

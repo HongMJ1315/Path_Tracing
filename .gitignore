@@ -2,3 +2,6 @@ input.txt
 build/
 .vscode/
 rt.zip
+readme*
+document*
+img*

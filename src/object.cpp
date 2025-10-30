@@ -3,8 +3,8 @@
 #include <cmath>
 #include <corecrt_math_defines.h>
 
-bool Sphere::check_intersect(const Ray &ray, float &t, float &u, float &v,
-    float tMin, float tMax) const{
+bool Sphere::check_intersect( Ray &ray, float &t, float &u, float &v,
+    float tMin, float tMax) {
     glm::vec3 D = glm::normalize(ray.vec);
     const glm::vec3 O = ray.point, C = center, S = scale;
     glm::vec3 OC = O - C;
@@ -40,7 +40,7 @@ bool Sphere::check_intersect(const Ray &ray, float &t, float &u, float &v,
     return true;
 }
 
-glm::vec3 Sphere::normal_at(const glm::vec3 &P, const Ray &ray, float, float) const{
+glm::vec3 Sphere::normal_at( glm::vec3 &P,  Ray &ray, float, float) {
     glm::vec3 n = glm::normalize(glm::vec3(
         scale.x * (P.x - center.x),
         scale.y * (P.y - center.y),
@@ -50,12 +50,12 @@ glm::vec3 Sphere::normal_at(const glm::vec3 &P, const Ray &ray, float, float) co
     return n;
 }
 
-glm::vec3 Triangle::geom_normal() const{
+glm::vec3 Triangle::geom_normal() {
     return glm::normalize(glm::cross(vert[1] - vert[0], vert[2] - vert[0]));
 }
 
-bool Triangle::check_intersect(const Ray &ray, float &t, float &u, float &v,
-    float tMin, float tMax) const{
+bool Triangle::check_intersect( Ray &ray, float &t, float &u, float &v,
+    float tMin, float tMax) {
     const glm::vec3 &v0 = vert[0], &v1 = vert[1], &v2 = vert[2];
     const glm::vec3 e1 = v1 - v0, e2 = v2 - v0;
 
@@ -79,14 +79,14 @@ bool Triangle::check_intersect(const Ray &ray, float &t, float &u, float &v,
     return true;
 }
 
-glm::vec3 Triangle::normal_at(const glm::vec3 &, const Ray &ray,
-    float, float) const{
+glm::vec3 Triangle::normal_at( glm::vec3 &, Ray &ray,
+    float, float) {
     glm::vec3 n = geom_normal();
     if(glm::dot(n, ray.vec) > 0.0f) n = -n;
     return n;
 }
 
-bool AABB::intersectAABB(const Ray &r, float tmin, float tmax){
+bool AABB::intersectAABB(Ray &r, float tmin, float tmax){
     constexpr float BBOX_EPS = 1e-6f;
 
     for(int a = 0; a < 3; ++a){
