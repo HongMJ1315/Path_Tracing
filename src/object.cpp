@@ -4,7 +4,7 @@
 #include <corecrt_math_defines.h>
 
 bool Sphere::check_intersect( Ray &ray, float &t, float &u, float &v,
-    float tMin, float tMax) {
+    float tMin, float tMax){
     glm::vec3 D = glm::normalize(ray.vec);
     const glm::vec3 O = ray.point, C = center, S = scale;
     glm::vec3 OC = O - C;

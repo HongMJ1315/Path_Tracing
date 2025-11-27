@@ -73,7 +73,7 @@ struct Hit{
     glm::vec3 normal{ 0.0f };
     glm::vec3 bary{ 0.0f };   // Triangle: (w,u,v) ; Sphere: (u,v,0)
     float u = 0.0f, v = 0.0f;
-    const Object *obj = nullptr;
+    Object *obj = nullptr;
     ObjKind kind = ObjKind::Unknown;
 };
 

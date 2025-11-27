@@ -21,7 +21,7 @@
 
 
 #define RENDER_THREADS 5
-#define GROUPING 0
+#define GROUPING 1
 
 // Window size
 glm::vec3 eye;
@@ -196,7 +196,7 @@ int main(int argc, char **argv){
             float ka, kd, ks;
             glm::vec3 color;
             input >> color;
-            input >> ka >> kd >> ks >> mtl.exp >> mtl.reflect;
+            input >> ka >> kd >> ks >> mtl.exp >> mtl.reflect >> mtl.refract;
             mtl.Ka = color * ka;
             mtl.Kd = color * kd;
             mtl.Ks = color * ks;
@@ -321,7 +321,14 @@ int main(int argc, char **argv){
     std::mt19937 mt_rand = std::mt19937(seed);
     std::shuffle(render_array, render_array + W * H, mt_rand);
 
+    init_lightray(groups);
+    init_light_group();
     auto start_time = std::chrono::steady_clock::now();
+
+    int progress = 0;
+    int total_pixel = resolution.first * resolution.second;
+    int percent = total_pixel / 100;
+
     while(!glfwWindowShouldClose(window)){
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -387,7 +394,7 @@ int main(int argc, char **argv){
                     glm::vec3 ray_origin = camera.eye + lens_offset;
                     glm::vec3 ray_dir = glm::normalize(focus_point - ray_origin);
 
-                    Ray ray(ray_origin, ray_dir);
+                    Ray ray(ray_origin, ray_dir, 0, RayType::EYE);
 
                     col += path_tracing(ray, groups, lights, 0);
                 }
@@ -400,14 +407,16 @@ int main(int argc, char **argv){
                     glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f + jx) + dy * (float(j) + 0.5f + jy);
 
                     glm::vec3 ray_dir = glm::normalize(pixel_pos - ori_cam.eye);
-                    Ray ray(ori_cam.eye, ray_dir);
+                    Ray ray(ori_cam.eye, ray_dir, 0, RayType::EYE);
 
-                    col += path_tracing(ray, groups, lights, 0);
+                    col += bdpt(ray, groups, 1);
+                    // col += path_tracing(ray, groups, lights, 0);
+
                 }
 
             }
             col = col / SAMPLE;
-
+            // std::cout << col << std::endl;
             col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
             col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
 
@@ -415,6 +424,9 @@ int main(int argc, char **argv){
             framebuffer[idx + 0] = (unsigned char) (col.r * 255.0f);
             framebuffer[idx + 1] = (unsigned char) (col.g * 255.0f);
             framebuffer[idx + 2] = (unsigned char) (col.b * 255.0f);
+            if(p % percent == 0){
+                std::cout << "Render " << progress++ << "%" << std::endl;
+            }
         }
         // std::cout << "update" << std::endl;
         pixel_cursor = end;
