@@ -3,7 +3,7 @@
 #include <cmath>
 #include <corecrt_math_defines.h>
 
-bool Sphere::check_intersect( Ray &ray, float &t, float &u, float &v,
+bool Sphere::check_intersect(Ray &ray, float &t, float &u, float &v,
     float tMin, float tMax){
     glm::vec3 D = glm::normalize(ray.vec);
     const glm::vec3 O = ray.point, C = center, S = scale;
@@ -12,6 +12,11 @@ bool Sphere::check_intersect( Ray &ray, float &t, float &u, float &v,
     const float a = S.x * D.x * D.x + S.y * D.y * D.y + S.z * D.z * D.z;
     const float b = 2.0f * (S.x * D.x * OC.x + S.y * D.y * OC.y + S.z * D.z * OC.z);
     const float c = S.x * OC.x * OC.x + S.y * OC.y * OC.y + S.z * OC.z * OC.z - r * r;
+
+    const float eps = 1e-6f;
+    if(c <= eps){
+        return false;
+    }
 
     const float disc = b * b - 4.0f * a * c;
     if(disc < 0.0f) return false;
@@ -40,7 +45,7 @@ bool Sphere::check_intersect( Ray &ray, float &t, float &u, float &v,
     return true;
 }
 
-glm::vec3 Sphere::normal_at( glm::vec3 &P,  Ray &ray, float, float) {
+glm::vec3 Sphere::normal_at(glm::vec3 &P, Ray &ray, float, float){
     glm::vec3 n = glm::normalize(glm::vec3(
         scale.x * (P.x - center.x),
         scale.y * (P.y - center.y),
@@ -50,12 +55,12 @@ glm::vec3 Sphere::normal_at( glm::vec3 &P,  Ray &ray, float, float) {
     return n;
 }
 
-glm::vec3 Triangle::geom_normal() {
+glm::vec3 Triangle::geom_normal(){
     return glm::normalize(glm::cross(vert[1] - vert[0], vert[2] - vert[0]));
 }
 
-bool Triangle::check_intersect( Ray &ray, float &t, float &u, float &v,
-    float tMin, float tMax) {
+bool Triangle::check_intersect(Ray &ray, float &t, float &u, float &v,
+    float tMin, float tMax){
     const glm::vec3 &v0 = vert[0], &v1 = vert[1], &v2 = vert[2];
     const glm::vec3 e1 = v1 - v0, e2 = v2 - v0;
 
@@ -79,8 +84,8 @@ bool Triangle::check_intersect( Ray &ray, float &t, float &u, float &v,
     return true;
 }
 
-glm::vec3 Triangle::normal_at( glm::vec3 &, Ray &ray,
-    float, float) {
+glm::vec3 Triangle::normal_at(glm::vec3 &, Ray &ray,
+    float, float){
     glm::vec3 n = geom_normal();
     if(glm::dot(n, ray.vec) > 0.0f) n = -n;
     return n;

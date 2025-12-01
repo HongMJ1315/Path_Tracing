@@ -4,7 +4,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 enum RayType{
-    EYE, LIGHT
+    EYE, LIGHT, SHADOW
 };
 
 class Ray{
@@ -12,9 +12,9 @@ public:
     glm::vec3 point;
     glm::vec3 vec;
     float refract;
-    RayType type;  
+    RayType type;
     Ray(){}
-    Ray(glm::vec3 point, glm::vec3 vec, float reftact, RayType type){
+    Ray(glm::vec3 point, glm::vec3 vec, float refract, RayType type){
         this->point = point;
         this->vec = vec;
         this->refract = refract;

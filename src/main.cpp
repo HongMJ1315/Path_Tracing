@@ -26,13 +26,6 @@
 // Window size
 glm::vec3 eye;
 std::pair<int, int> resolution;
-struct Camera{
-    // glm::vec3 ul, ur, ll, lr;
-    glm::vec3 eye; //eye position
-    glm::vec3 look_at; // look position
-    glm::vec3 view_up; //view up vector
-    float fov;
-};
 
 
 //run type = 0 Use FOV, type = 1 Use f_mm 
@@ -284,7 +277,7 @@ int main(int argc, char **argv){
     std::vector<unsigned char> framebuffer(W * H * 3, 0);
 
     int pixel_cursor = 0;
-    const int k_pixels_per_frame = 50;
+    const int k_pixels_per_frame = 5;
 
     glUseProgram(prog);
     glUniform1i(glGetUniformLocation(prog, "uTex"), 0);
@@ -321,6 +314,28 @@ int main(int argc, char **argv){
     std::mt19937 mt_rand = std::mt19937(seed);
     std::shuffle(render_array, render_array + W * H, mt_rand);
 
+
+    std::vector<EyeRayInfo> eyeray;
+    for(int p = 0; p < W * H; p++){
+        int j = render_array[p] / W;              // row
+        int i = render_array[p] % W;              // col
+        for(int s = 0; s < SAMPLE; s++){
+            // std::cout << ori_cam.fov << std::endl;
+            float jx = rng_uniform01() - 0.5f;
+            float jy = rng_uniform01() - 0.5f;
+            glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f + jx) + dy * (float(j) + 0.5f + jy);
+
+            glm::vec3 ray_dir = glm::normalize(pixel_pos - ori_cam.eye);
+            Ray ray(ori_cam.eye, ray_dir, 1, RayType::EYE);
+            EyeRayInfo info;
+            info.i = i, info.j = j;
+            info.ray = ray;
+
+            eyeray.push_back(info);
+        }
+    }
+
+    init_eyeray(groups, eyeray, W, H);
     init_lightray(groups);
     init_light_group();
     auto start_time = std::chrono::steady_clock::now();
@@ -397,25 +412,14 @@ int main(int argc, char **argv){
                     Ray ray(ray_origin, ray_dir, 0, RayType::EYE);
 
                     col += path_tracing(ray, groups, lights, 0);
+                    col = col / SAMPLE;
                 }
             }
             else{
-                for(int k = 0; k < SAMPLE; k++){
-                    // std::cout << ori_cam.fov << std::endl;
-                    float jx = rng_uniform01() - 0.5f;
-                    float jy = rng_uniform01() - 0.5f;
-                    glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f + jx) + dy * (float(j) + 0.5f + jy);
-
-                    glm::vec3 ray_dir = glm::normalize(pixel_pos - ori_cam.eye);
-                    Ray ray(ori_cam.eye, ray_dir, 0, RayType::EYE);
-
-                    col += bdpt(ray, groups, 1);
-                    // col += path_tracing(ray, groups, lights, 0);
-
-                }
+                col = eye_light_connect(i, j, groups);
+                // col = light_debuger(i, j, UL, dx, dy, groups, ori_cam);
 
             }
-            col = col / SAMPLE;
             // std::cout << col << std::endl;
             col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
             col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma

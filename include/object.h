@@ -33,7 +33,7 @@ public:
         float tMin = 1e-4f,
         float tMax = std::numeric_limits<float>::infinity()) = 0;
 
-    virtual glm::vec3 normal_at(glm::vec3 &P,  Ray &ray,
+    virtual glm::vec3 normal_at(glm::vec3 &P, Ray &ray,
         float u, float v) = 0;
 };
 
@@ -85,4 +85,12 @@ public:
     void add_obj(Object *obj);
     bool intersectAABB(Ray &r,
         float tMin = 1e-4, float tMax = std::numeric_limits<float>::infinity());
+};
+
+struct Camera{
+    // glm::vec3 ul, ur, ll, lr;
+    glm::vec3 eye; //eye position
+    glm::vec3 look_at; // look position
+    glm::vec3 view_up; //view up vector
+    float fov;
 };
