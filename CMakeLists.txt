@@ -12,6 +12,10 @@ project("Hw1"
 add_executable(${MY_EXECUTABLE})
 set_target_properties(${MY_EXECUTABLE}
     PROPERTIES
+    CUDA_STANDARD 17
+    CUDA_STANDARD_REQUIRED ON
+    CUDA_SEPARABLE_COMPILATION ON
+
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
@@ -38,6 +42,7 @@ file(GLOB MY_SOURCE CONFIGURE_DEPENDS
     "src/*.cpp"
     "src/*.cc"
     "src/*.c" # Add .c files to be compiled
+    "src/*.cu" # Add .c files to be compiled
 )
 target_sources(${MY_EXECUTABLE} PRIVATE ${MY_SOURCE})
 

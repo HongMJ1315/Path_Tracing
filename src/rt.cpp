@@ -3,7 +3,7 @@
 #include <iostream>
 #include <corecrt_math_defines.h>
 
-#define LIGHT_COLOR (glm::vec3( 1.f,  1.f, 1.f))
+#define LIGHT_COLOR (glm::vec3(0.01f,  .01f, .01f))
 #define LIGHT_POS (glm::vec3(0, 0.49, 0))
 #define LIGHT_R 0.25f
 #define LIGHT_SAMPLE 4000
@@ -15,7 +15,6 @@ std::vector<LightVertex> light_subpath;
 std::vector<Light> light;
 std::map<int, AABB> light_groups, eye_groups;
 std::vector<std::vector<std::vector<EyeVertex> > > screen_info;
-
 
 std::ostream &operator<<(std::ostream &os, const glm::vec3 vec){
     os << "(" << vec.x << ", " << vec.y << ", " << vec.z << ")";
@@ -76,7 +75,7 @@ void init_lightray(std::map<int, AABB> &groups){
     for(int i = 0; i < LIGHT_SAMPLE; i++){
         glm::vec3 light_pos = LIGHT_POS + glm::vec3(
             random_float(-1, 1) * LIGHT_R, 0, random_float(-1, 1) * LIGHT_R);
-        glm::vec3 light_dir = sample_hemisphere_uniform(glm::vec3(0, -1, 0));
+        glm::vec3 light_dir = sample_hemisphere_cosine(glm::vec3(0, -1, 0));
         glm::vec3 accumulated = lightray_tracer(Ray(light_pos, light_dir, 1, RayType::LIGHT), groups, LIGHT_COLOR);
 
         // std::cout << light_pos << " " << light_dir << std::endl;
@@ -90,7 +89,6 @@ inline float get_theta(glm::vec3 a, glm::vec3 b){
 }
 
 glm::vec3 sample_hemisphere_cosine(const glm::vec3 &normal){
-    // 步驟 1：建立 ONB（T, B, N）
     glm::vec3 N = glm::normalize(normal);
     glm::vec3 T, B;
 
@@ -102,7 +100,6 @@ glm::vec3 sample_hemisphere_cosine(const glm::vec3 &normal){
     }
     B = glm::cross(N, T);
 
-    // 步驟 2：使用 cosine-weighted hemisphere distribution
     float u1 = random_float(0, 1);
     float u2 = random_float(0, 1);
 
@@ -113,7 +110,6 @@ glm::vec3 sample_hemisphere_cosine(const glm::vec3 &normal){
     float y = r * std::sin(phi);
     float z = std::sqrt(std::max(0.0f, 1.0f - u1)); // cosθ
 
-    // 步驟 3：local → world transform
     glm::vec3 local(x, y, z);
     glm::vec3 world = x * T + y * B + z * N;
     return glm::normalize(world);
@@ -124,13 +120,22 @@ glm::vec3 lightray_tracer(Ray light_ray,
     glm::vec3 throughput){
     glm::vec3 accumulated(0.0f);
 
+
+    LightVertex src;
+    src.pos = light_ray.point;
+    src.normal = light_ray.vec;
+    src.wi = -light_ray.vec;        // 對應出射方向
+    src.throughput = LIGHT_COLOR;       // 初始光強（可再除以 pdf_area 等）
+    src.obj = nullptr;           // 特別標記：這是光源，不是場景物件
+
+    light_subpath.push_back(src);
     for(int depth = 0; depth < LIGHT_DEPTH; depth++){
 
         Hit h = first_hit(light_ray, groups);
         if(!h.hit) break;
         glm::vec3 n = glm::normalize(h.normal);
 
-        if(h.obj->mtl.refract != light_ray.refract && h.obj->mtl.refract != -1){
+        if(h.obj->mtl.refract > 0){
             glm::vec3 I = glm::normalize(light_ray.vec);
             glm::vec3 N = n;
 
@@ -159,6 +164,7 @@ glm::vec3 lightray_tracer(Ray light_ray,
 
             light_ray.point = h.pos + light_ray.vec * 1e-4f;
 
+            depth--;
             continue;
         }
 
@@ -247,7 +253,7 @@ std::vector<EyeVertex> eyeray_tracer(Ray eye_ray,
         if(!h.hit) break;
         glm::vec3 n = glm::normalize(h.normal);
 
-        if(h.obj->mtl.refract != eye_ray.refract && h.obj->mtl.refract != -1){
+        if(h.obj->mtl.refract > 0){
             glm::vec3 I = glm::normalize(eye_ray.vec);
             glm::vec3 N = n;
 
@@ -276,10 +282,11 @@ std::vector<EyeVertex> eyeray_tracer(Ray eye_ray,
 
             eye_ray.point = h.pos + eye_ray.vec * 1e-4f;
 
+            depth--;
             continue;
         }
 
-        
+
         throughput *= h.obj->mtl.Kd;
 
         EyeVertex v;
@@ -292,7 +299,7 @@ std::vector<EyeVertex> eyeray_tracer(Ray eye_ray,
 
 
         glm::vec3 newDir = sample_hemisphere_cosine(n);
-        eye_ray = Ray(h.pos + newDir * 1e-4f, newDir, 1, RayType::LIGHT);
+        eye_ray = Ray(h.pos + newDir * 1e-4f, newDir, 1, RayType::EYE);
     }
     return ret;
 }
@@ -307,34 +314,26 @@ glm::vec3 eye_light_connect(int i, int j, std::map<int, AABB> &groups){
 
     glm::vec3 L(0.0f);
 
-    // 對這個 pixel 的每個 eye 頂點
     for(const auto &ev : eye_subpath){
         glm::vec3 nE = glm::normalize(ev.normal);
         glm::vec3 KdE = ev.obj->mtl.Kd;
         glm::vec3 fE = KdE * (1.0f / float(M_PI));  // Lambert BRDF
-
-        // 和所有 light_subpath 的頂點做連接
         for(const auto &lv : light_path){
             glm::vec3 nL = glm::normalize(lv.normal);
-            glm::vec3 KdL = lv.obj->mtl.Kd;
-            glm::vec3 fL = KdL * (1.0f / float(M_PI));
-
-            // x = eye vertex, y = light vertex
+            glm::vec3 KdL = LIGHT_COLOR;
+            glm::vec3 Le = (lv.obj == nullptr) ? LIGHT_COLOR : glm::vec3(1.0f);
             glm::vec3 d = lv.pos - ev.pos;
             float dist2 = glm::dot(d, d);
             if(dist2 <= 1e-8f) continue;
 
             float dist = std::sqrt(dist2);
-            glm::vec3 wi = d / dist;        // 從 eye 頂點往 light 頂點的方向
+            glm::vec3 wi = d / dist;
 
-            // 幾何項的 cosθ
             float cosE = glm::max(0.0f, glm::dot(nE, wi));
-            float cosL = glm::max(0.0f, glm::dot(nL, -wi));   // 反向
+            float cosL = glm::max(0.0f, glm::dot(nL, -wi));
 
             if(cosE <= 0.0f || cosL <= 0.0f) continue;
 
-            // visibility test：中間有沒有擋到
-            // visibility test：考慮透光材
             glm::vec3 transmittance(1.0f);
             bool occluded = false;
 
@@ -343,15 +342,14 @@ glm::vec3 eye_light_connect(int i, int j, std::map<int, AABB> &groups){
 
             while(true){
                 Hit shadow_hit = first_hit(shadow_ray, groups, 1e-4f, maxDist);
-                if(!shadow_hit.hit ){
-                    break; // 直線路徑上沒有東西了
+                if(!shadow_hit.hit){
+                    break;
                 }
 
                 const Material &mtlS = shadow_hit.obj->mtl;
 
                 if(mtlS.refract <= 0.0f){
-                    // 不透光 → 阻擋眼-light 連線
-                    // std::cout << "shadow" << std::endl;
+
                     occluded = true;
                     break;
                 }
@@ -360,22 +358,17 @@ glm::vec3 eye_light_connect(int i, int j, std::map<int, AABB> &groups){
                     // 你可以在這裡決定如何衰減，例如：
                     // transmittance *= mtlS.Kd; // 或增加一個 mtlS.transmit
 
-                    // 更新 shadow_ray 的起點，方向不變，繼續往前找下一個東西
                     shadow_ray.point = shadow_hit.pos + shadow_ray.vec * 1e-4f;
-                    // 這裡不改 maxDist，因為我們只是在同一條直線上往前掃
                     continue;
                 }
             }
 
             if(occluded) continue;
 
-            // 幾何項 G(x, y)
             float G = (cosE * cosL) / dist2;
 
-            // 路徑貢獻
             glm::vec3 contrib = ev.throughput * fE;
             contrib *= G;
-            contrib *= fL;
             contrib *= lv.throughput;
             contrib *= transmittance;
 
@@ -383,7 +376,7 @@ glm::vec3 eye_light_connect(int i, int j, std::map<int, AABB> &groups){
         }
     }
 
-    return L / float(eye_subpath.size());
+    return L;
 }
 
 glm::vec3 light_debuger(int i, int j, glm::vec3 UL, glm::vec3 dx, glm::vec3 dy, std::map<int, AABB> &groups, Camera ori_cam){
@@ -397,8 +390,8 @@ glm::vec3 light_debuger(int i, int j, glm::vec3 UL, glm::vec3 dx, glm::vec3 dy, 
         glm::vec3 ray_dir = glm::normalize(pixel_pos - ori_cam.eye);
         Ray ray(ori_cam.eye, ray_dir, 0, RayType::EYE);
 
-        col += path_tracing(ray, eye_groups, light, 0);
-        // col += path_tracing(ray, light_groups, light, 0);
+        // col += path_tracing(ray, eye_groups, light, 0);
+        col += path_tracing(ray, light_groups, light, 0);
 
     }
     return col / SAMPLE;
