@@ -6,8 +6,8 @@
 #define LIGHT_COLOR (glm::vec3(0.01f,  .01f, .01f))
 #define LIGHT_POS (glm::vec3(0, 0.49, 0))
 #define LIGHT_R 0.25f
-#define LIGHT_SAMPLE 4000
-#define LIGHT_DEPTH 2
+#define LIGHT_SAMPLE 8000
+#define LIGHT_DEPTH 3
 
 #define EYE_DEPTH 3
 
@@ -193,6 +193,7 @@ void init_lightray(std::map<int, AABB> &groups){
         // std::cout << light_pos << " " << light_dir << std::endl;
 
     }
+    std::cout << "Light Ray：" << light_subpath.size() << std::endl;
 }
 
 //rad
@@ -348,10 +349,13 @@ void init_light_group(){
 void init_eyeray(std::map<int, AABB> &groups, std::vector<EyeRayInfo> &eye_ray,
     int W, int H){
     screen_info.resize(W, std::vector<std::vector<EyeVertex> >(H));
+    int eyeray_cnt = 0;
     for(int i = 0; i < eye_ray.size(); i++){
         std::vector<EyeVertex> res = eyeray_tracer(eye_ray[i].ray, groups, glm::vec3(1, 1, 1));
         screen_info[eye_ray[i].i][eye_ray[i].j] = res;
+        eyeray_cnt += res.size();
     }
+    std::cout << "Eye Ray：" << eyeray_cnt << std::endl;
 }
 
 std::vector<EyeVertex> eyeray_tracer(Ray &eye_ray,

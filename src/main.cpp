@@ -297,7 +297,9 @@ int main(int argc, char **argv){
     for(const auto &s : balls)      scene.push_back(&s);
     for(const auto &t : triangles)  scene.push_back(&t);
 
+    std::vector<int>  acc_buffer(H * W * 3, 0);
     std::vector<unsigned char> framebuffer(W * H * 3, 0);
+    int render_conut = 0;
 
     int pixel_cursor = 0;
     const int k_pixels_per_frame = 5;
@@ -453,7 +455,7 @@ int main(int argc, char **argv){
             // col = eye_light_connect(i, j, groups);
             // col = light_debuger(i, j, UL, dx, dy, groups, ori_cam);
             gen_eyeray(eyeray, ori_cam, W, H, UL, dx, dy);
-
+            render_conut++;
             init_eyeray(groups, eyeray, W, H);
             init_lightray(groups);
             std::vector<glm::vec3> cuda_results;
@@ -466,20 +468,13 @@ int main(int argc, char **argv){
                     col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
 
                     int idx = (size_t(H - 1 - j) * W + i) * 3;
-                    if(is_first){
-                        framebuffer[idx + 0] = (unsigned char) (col.r * 255.0f);
-                        framebuffer[idx + 1] = (unsigned char) (col.g * 255.0f);
-                        framebuffer[idx + 2] = (unsigned char) (col.b * 255.0f);
-                    }
-                    else{
-                        framebuffer[idx + 0] =
-                            (framebuffer[idx + 0] + (unsigned char) (col.r * 255.0f)) / 2;
-                        framebuffer[idx + 1] =
-                            (framebuffer[idx + 1] + (unsigned char) (col.g * 255.0f)) / 2;
-                        framebuffer[idx + 2] =
-                            (framebuffer[idx + 2] + (unsigned char) (col.b * 255.0f)) / 2;
+                    acc_buffer[idx + 0] += (int) (col.r * 255.0f);
+                    acc_buffer[idx + 1] += (int) (col.g * 255.0f);
+                    acc_buffer[idx + 2] += (int) (col.b * 255.0f);
 
-                    }
+                    framebuffer[idx + 0] = (unsigned char) (acc_buffer[idx + 0] / render_conut);
+                    framebuffer[idx + 1] = (unsigned char) (acc_buffer[idx + 1] / render_conut);
+                    framebuffer[idx + 2] = (unsigned char) (acc_buffer[idx + 2] / render_conut);
                 }
             }
             is_first = 0;
