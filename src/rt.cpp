@@ -26,6 +26,118 @@ std::istream &operator>>(std::istream &is, glm::vec3 &vec){
     return is;
 }
 
+// 輔助函式：將 glm::vec3 轉為 CudaVec3
+CudaVec3 to_cv3(const glm::vec3 &v){
+    return { v.x, v.y, v.z };
+}
+
+// 輔助函式：將 Material 轉為 CudaMaterial
+CudaMaterial to_cmtl(const Material &m){
+    CudaMaterial cm;
+    cm.Kd = to_cv3(m.Kd);
+    cm.refract = m.refract;
+    return cm;
+}
+
+std::vector<glm::vec3> run_cuda_eye_light_connect(
+    int W, int H,
+    std::map<int, AABB> &groups
+){
+    // 1. Flatten Light Path
+    std::vector<CudaLightVertex> h_light_path;
+    h_light_path.reserve(light_subpath.size());
+    for(const auto &lv : light_subpath){
+        CudaLightVertex clv;
+        clv.pos = to_cv3(lv.pos);
+        clv.normal = to_cv3(lv.normal);
+        clv.throughput = to_cv3(lv.throughput);
+        if(lv.obj) clv.mtl = to_cmtl(lv.obj->mtl);
+        else{ // Light source
+            clv.mtl.Kd = { 1,1,1 };
+            clv.mtl.refract = 0;
+        }
+        h_light_path.push_back(clv);
+    }
+
+    // 2. Flatten Eye Paths & Generate Offsets
+    std::vector<CudaEyeVertex> h_eye_paths_flat;
+    std::vector<int> h_eye_offsets(W * H);
+    std::vector<int> h_eye_counts(W * H);
+
+    int current_offset = 0;
+    for(int j = 0; j < H; j++){
+        for(int i = 0; i < W; i++){
+            int idx = j * W + i; // 注意：要配合 render_array 的邏輯，或直接線性
+            // 由於 screen_info 是 [W][H]，我們需要確保索引一致
+            // main.cpp 的寫法是 screen_info[i][j] (col, row)
+            // CUDA kernel 是一維陣列，我們假設 row-major (j*W + i)
+
+            const auto &path = screen_info[i][j];
+            h_eye_offsets[idx] = current_offset;
+            h_eye_counts[idx] = path.size();
+
+            for(const auto &ev : path){
+                CudaEyeVertex cev;
+                cev.pos = to_cv3(ev.pos);
+                cev.normal = to_cv3(ev.normal);
+                cev.throughput = to_cv3(ev.throughput);
+                if(ev.obj) cev.mtl = to_cmtl(ev.obj->mtl);
+                else cev.mtl = { {0,0,0}, 0 };
+                h_eye_paths_flat.push_back(cev);
+            }
+            current_offset += path.size();
+        }
+    }
+
+    // 3. Flatten Scene Objects (Simple Iteration over Groups)
+    std::vector<CudaSphere> h_spheres;
+    std::vector<CudaTriangle> h_triangles;
+
+    for(auto &g : groups){
+        for(Object *obj : g.second.objs){
+            if(Sphere *s = dynamic_cast<Sphere *>(obj)){
+                CudaSphere cs;
+                cs.center = to_cv3(s->center);
+                cs.r = s->r;
+                cs.mtl = to_cmtl(s->mtl);
+                cs.id = s->obj_id;
+                h_spheres.push_back(cs);
+            }
+            else if(Triangle *t = dynamic_cast<Triangle *>(obj)){
+                CudaTriangle ct;
+                ct.v0 = to_cv3(t->vert[0]);
+                ct.v1 = to_cv3(t->vert[1]);
+                ct.v2 = to_cv3(t->vert[2]);
+                ct.mtl = to_cmtl(t->mtl);
+                ct.id = t->obj_id;
+                h_triangles.push_back(ct);
+            }
+        }
+    }
+
+    // 4. Output Buffer
+    std::vector<CudaVec3> cuda_output(W * H);
+
+    // 5. Call CUDA Wrapper
+    cuda_eye_light_connect_wrapper(
+        W, H,
+        h_light_path.data(), h_light_path.size(),
+        h_eye_paths_flat.data(),
+        h_eye_offsets.data(), h_eye_counts.data(),
+        h_spheres.data(), h_spheres.size(),
+        h_triangles.data(), h_triangles.size(),
+        to_cv3(LIGHT_COLOR), // 假設 LIGHT_COLOR 在 rt.h 有定義
+        cuda_output.data()
+    );
+
+    // 6. Convert back to glm::vec3 for existing pipeline
+    std::vector<glm::vec3> result(W * H);
+    for(int k = 0; k < W * H; k++){
+        result[k] = glm::vec3(cuda_output[k].x, cuda_output[k].y, cuda_output[k].z);
+    }
+    return result;
+}
+
 inline Hit first_hit(Ray &inRay, std::map<int, AABB> &groups,
     float tMin = 1e-4f, float tMax = std::numeric_limits<float>::infinity()){
     Ray ray = inRay;
@@ -233,7 +345,7 @@ void init_light_group(){
 }
 
 
-void init_eyeray(std::map<int, AABB> &groups, std::vector<EyeRayInfo> eye_ray,
+void init_eyeray(std::map<int, AABB> &groups, std::vector<EyeRayInfo> &eye_ray,
     int W, int H){
     screen_info.resize(W, std::vector<std::vector<EyeVertex> >(H));
     for(int i = 0; i < eye_ray.size(); i++){
@@ -242,7 +354,7 @@ void init_eyeray(std::map<int, AABB> &groups, std::vector<EyeRayInfo> eye_ray,
     }
 }
 
-std::vector<EyeVertex> eyeray_tracer(Ray eye_ray,
+std::vector<EyeVertex> eyeray_tracer(Ray &eye_ray,
     std::map<int, AABB> &groups,
     glm::vec3 throughput){
 

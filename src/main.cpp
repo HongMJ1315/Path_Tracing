@@ -26,6 +26,7 @@
 // Window size
 glm::vec3 eye;
 std::pair<int, int> resolution;
+int render_array[600 * 600] = {};
 
 
 //run type = 0 Use FOV, type = 1 Use f_mm 
@@ -81,7 +82,29 @@ inline glm::vec2 concentric_sample_disk(float u1, float u2){
     return { r * std::cos(theta), r * std::sin(theta) };
 }
 
-int render_array[600 * 600] = {};
+void gen_eyeray(std::vector<EyeRayInfo> &eyeray, Camera ori_cam,
+    const int W, const int H, glm::vec3 UL, glm::vec3 dx, glm::vec3 dy){
+    eyeray.clear();
+    for(int p = 0; p < W * H; p++){
+        int j = render_array[p] / W;              // row
+        int i = render_array[p] % W;              // col
+        for(int s = 0; s < SAMPLE; s++){
+            // std::cout << ori_cam.fov << std::endl;
+            float jx = rng_uniform01() - 0.5f;
+            float jy = rng_uniform01() - 0.5f;
+            glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f + jx) + dy * (float(j) + 0.5f + jy);
+
+            glm::vec3 ray_dir = glm::normalize(pixel_pos - ori_cam.eye);
+            Ray ray(ori_cam.eye, ray_dir, 1, RayType::EYE);
+            EyeRayInfo info;
+            info.i = i, info.j = j;
+            info.ray = ray;
+
+            eyeray.push_back(info);
+        }
+    }
+}
+
 
 std::map<int, AABB> groups;
 int main(int argc, char **argv){
@@ -100,7 +123,7 @@ int main(int argc, char **argv){
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    GLFWwindow *window = glfwCreateWindow(500, 500, "Ray Tracing", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(800, 800, "Ray Tracing", nullptr, nullptr);
     if(!window){
         std::cerr << "Failed to create window\n";
         glfwTerminate();
@@ -316,33 +339,20 @@ int main(int argc, char **argv){
 
 
     std::vector<EyeRayInfo> eyeray;
-    for(int p = 0; p < W * H; p++){
-        int j = render_array[p] / W;              // row
-        int i = render_array[p] % W;              // col
-        for(int s = 0; s < SAMPLE; s++){
-            // std::cout << ori_cam.fov << std::endl;
-            float jx = rng_uniform01() - 0.5f;
-            float jy = rng_uniform01() - 0.5f;
-            glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f + jx) + dy * (float(j) + 0.5f + jy);
-
-            glm::vec3 ray_dir = glm::normalize(pixel_pos - ori_cam.eye);
-            Ray ray(ori_cam.eye, ray_dir, 1, RayType::EYE);
-            EyeRayInfo info;
-            info.i = i, info.j = j;
-            info.ray = ray;
-
-            eyeray.push_back(info);
-        }
-    }
+    gen_eyeray(eyeray, ori_cam, W, H, UL, dx, dy);
 
     init_eyeray(groups, eyeray, W, H);
     init_lightray(groups);
-    init_light_group();
+    // init_light_group();
     auto start_time = std::chrono::steady_clock::now();
 
     int progress = 0;
     int total_pixel = resolution.first * resolution.second;
     int percent = total_pixel / 100;
+
+
+
+    bool is_first = 1;
 
     while(!glfwWindowShouldClose(window)){
         ImGui_ImplOpenGL3_NewFrame();
@@ -356,6 +366,17 @@ int main(int argc, char **argv){
         ImGui::SliderFloat("F/", &A, 1.4f, 32.f);
         ImGui::SliderFloat("Focus Dist", &focus_dist, 0.1f, 10.0f); // 可視需求調整範圍
         ImGui::Checkbox("Depth Field", &is_depth);
+        if(ImGui::Button("Save Image")){
+            cv::Mat img_rgb(H, W, CV_8UC3, framebuffer.data());
+            cv::Mat img_bgr, img_bgr_Flip;
+
+            cv::cvtColor(img_rgb, img_bgr, cv::COLOR_RGB2BGR);
+            cv::flip(img_bgr, img_bgr_Flip, 0);
+
+            if(!cv::imwrite("color_output.png", img_bgr_Flip)){
+                std::cerr << "彩色圖片輸出失敗！" << std::endl;
+            }
+        }
 
         ImGui::End();
         // /*
@@ -382,14 +403,14 @@ int main(int argc, char **argv){
 
         int end = std::min(W * H, pixel_cursor + k_pixels_per_frame);
 
+        glm::vec3 col(0.0f);
+        if(is_depth){
 #pragma omp parallel for schedule(dynamic, 128)
-        for(int p = pixel_cursor; p < end; ++p){
-            int j = render_array[p] / W;              // row
-            int i = render_array[p] % W;              // col
+            for(int p = pixel_cursor; p < end; ++p){
+                int j = render_array[p] / W;              // row
+                int i = render_array[p] % W;              // col
 
-            glm::vec3 col(0.0f);
 
-            if(is_depth){
                 float lens_radius = (F / A) * 0.5f * 0.1f;
                 // std::cout << lens_radius << std::endl;
                 for(int k = 0; k < SAMPLE; k++){
@@ -414,23 +435,54 @@ int main(int argc, char **argv){
                     col += path_tracing(ray, groups, lights, 0);
                     col = col / SAMPLE;
                 }
-            }
-            else{
-                col = eye_light_connect(i, j, groups);
-                // col = light_debuger(i, j, UL, dx, dy, groups, ori_cam);
+                col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
+                col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
 
+                size_t idx = (size_t(H - 1 - j) * W + i) * 3;
+                framebuffer[idx + 0] = (unsigned char) (col.r * 255.0f);
+                framebuffer[idx + 1] = (unsigned char) (col.g * 255.0f);
+                framebuffer[idx + 2] = (unsigned char) (col.b * 255.0f);
             }
+
             // std::cout << col << std::endl;
-            col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
-            col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
+            // if(p % percent == 0){
+            //     std::cout << "Render " << progress++ << "%" << std::endl;
+            // }
+        }
+        else{
+            // col = eye_light_connect(i, j, groups);
+            // col = light_debuger(i, j, UL, dx, dy, groups, ori_cam);
+            gen_eyeray(eyeray, ori_cam, W, H, UL, dx, dy);
 
-            size_t idx = (size_t(H - 1 - j) * W + i) * 3;
-            framebuffer[idx + 0] = (unsigned char) (col.r * 255.0f);
-            framebuffer[idx + 1] = (unsigned char) (col.g * 255.0f);
-            framebuffer[idx + 2] = (unsigned char) (col.b * 255.0f);
-            if(p % percent == 0){
-                std::cout << "Render " << progress++ << "%" << std::endl;
+            init_eyeray(groups, eyeray, W, H);
+            init_lightray(groups);
+            std::vector<glm::vec3> cuda_results;
+            cuda_results = run_cuda_eye_light_connect(W, H, groups);
+            for(int i = 0; i < W; i++){
+                for(int j = 0; j < H; j++){
+                    glm::vec3 col = cuda_results[j * W + i];
+
+                    col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
+                    col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
+
+                    int idx = (size_t(H - 1 - j) * W + i) * 3;
+                    if(is_first){
+                        framebuffer[idx + 0] = (unsigned char) (col.r * 255.0f);
+                        framebuffer[idx + 1] = (unsigned char) (col.g * 255.0f);
+                        framebuffer[idx + 2] = (unsigned char) (col.b * 255.0f);
+                    }
+                    else{
+                        framebuffer[idx + 0] =
+                            (framebuffer[idx + 0] + (unsigned char) (col.r * 255.0f)) / 2;
+                        framebuffer[idx + 1] =
+                            (framebuffer[idx + 1] + (unsigned char) (col.g * 255.0f)) / 2;
+                        framebuffer[idx + 2] =
+                            (framebuffer[idx + 2] + (unsigned char) (col.b * 255.0f)) / 2;
+
+                    }
+                }
             }
+            is_first = 0;
         }
         // std::cout << "update" << std::endl;
         pixel_cursor = end;

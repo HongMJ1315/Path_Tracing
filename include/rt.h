@@ -1,5 +1,8 @@
 #include "object.h"
 #include "rng.h"
+#include "bdpt.cuh"
+#include <vector>
+#include <cstring> // for memcpy
 #include <vector>
 #include <map>
 
@@ -31,6 +34,11 @@ struct EyeRayInfo{
 std::ostream &operator<<(std::ostream &os, const glm::vec3 vec);
 std::istream &operator>>(std::istream &is, glm::vec3 &vec);
 
+std::vector<glm::vec3> run_cuda_eye_light_connect(
+    int W, int H,
+    std::map<int, AABB> &groups
+);
+
 inline Hit first_hit(Ray &inRay, std::map<int, AABB> &groups,
     float tMin, float tMax);
 
@@ -42,10 +50,10 @@ glm::vec3 lightray_tracer(Ray light_ray, std::map<int, AABB> &groups, glm::vec3 
 
 void init_light_group();
 
-void init_eyeray(std::map<int, AABB> &groups, std::vector<EyeRayInfo> eyeray,
+void init_eyeray(std::map<int, AABB> &groups, std::vector<EyeRayInfo> &eyeray,
     int W, int H);
 
-std::vector<EyeVertex> eyeray_tracer(Ray ray,
+std::vector<EyeVertex> eyeray_tracer(Ray &ray,
     std::map<int, AABB> &groups,
     glm::vec3 throughput);
 

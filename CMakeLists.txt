@@ -5,7 +5,7 @@ set(MY_EXECUTABLE "Hw1")
 
 project("Hw1"
     VERSION 0.1.0
-    LANGUAGES CXX C
+    LANGUAGES CXX C CUDA
     DESCRIPTION "Hw1"
 )
 
@@ -15,7 +15,6 @@ set_target_properties(${MY_EXECUTABLE}
     CUDA_STANDARD 17
     CUDA_STANDARD_REQUIRED ON
     CUDA_SEPARABLE_COMPILATION ON
-
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
@@ -35,9 +34,13 @@ find_package(imgui REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(OpenMP REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 
 include_directories("include\\")
-target_include_directories(${MY_EXECUTABLE} PRIVATE "include" ${STB_INCLUDE_DIRS})
+target_include_directories(${MY_EXECUTABLE} PRIVATE "include"
+    ${STB_INCLUDE_DIRS}
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
 file(GLOB MY_SOURCE CONFIGURE_DEPENDS
     "src/*.cpp"
     "src/*.cc"
@@ -58,6 +61,7 @@ target_link_libraries(${MY_EXECUTABLE} PRIVATE
     Eigen3::Eigen
     ${OpenCV_LIBS}
     OpenMP::OpenMP_CXX
+    CUDA::cudart
 )
 
 add_custom_command(TARGET ${MY_EXECUTABLE} POST_BUILD
