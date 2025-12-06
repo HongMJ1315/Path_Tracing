@@ -10,7 +10,7 @@
 enum class ObjKind{ Unknown, Sphere, Triangle };
 
 struct Material{
-    glm::vec3 Ka{ 0.0f };   // ambient
+    glm::vec3 Kg{ 0.0f };   // ambient
     glm::vec3 Kd{ 0.0f };   // diffuse
     glm::vec3 Ks{ 0.0f };   // specular
     float exp{ 32.0f };     // shininess

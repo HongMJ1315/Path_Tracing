@@ -306,7 +306,7 @@ void init_light_group(){
         Sphere *s = new Sphere();
         s->center = i.pos;
         Material *mtl = new Material();
-        mtl->Ka = mtl->Kd = i.throughput;
+        mtl->Kd = i.throughput;
         s->mtl = *mtl;
         // std::cout << i.throughput << std::endl;
         s->r = 0.01;
@@ -326,7 +326,7 @@ void init_light_group(){
                 Sphere *s = new Sphere();
                 s->center = r.pos;
                 Material *mtl = new Material();
-                mtl->Ka = mtl->Kd = r.throughput;
+                mtl->Kd = r.throughput;
                 // std::cout << s->center << std::endl;
                 s->mtl = *mtl;
                 // std::cout << i.throughput << std::endl;
@@ -520,7 +520,7 @@ glm::vec3 phong(Hit &hit, std::vector<Light> &lights,
     glm::vec3 N = glm::normalize(hit.normal);
     glm::vec3 V = glm::normalize(hit.eye_dir);   // 表面 → 眼睛
 
-    glm::vec3 color = mtl.Ka;
+    glm::vec3 color = mtl.Kg;
 
     for(const auto &l : lights){
         glm::vec3 L = glm::normalize(l.dir);

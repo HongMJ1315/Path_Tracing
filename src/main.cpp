@@ -15,6 +15,7 @@
 #include <omp.h>
 #include <map>
 
+
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -212,11 +213,11 @@ int main(int argc, char **argv){
             float ka, kd, ks;
             glm::vec3 color;
             input >> color;
-            input >> ka >> kd >> ks >> mtl.exp >> mtl.reflect >> mtl.refract;
-            mtl.Ka = color * ka;
+            input >> ka >> kd >> ks >> mtl.reflect >> mtl.refract;
+            mtl.Kg = color * ka;
             mtl.Kd = color * kd;
             mtl.Ks = color * ks;
-            // std::cout << color << " " << mtl.Ka << " " << mtl.Kd << " " << mtl.Ks << std::endl;
+            // std::cout << color << " " << mtl.kg << " " << mtl.Kd << " " << mtl.Ks << std::endl;
             // std::cout << "read M" << std::endl;
         }
         else if(t == 'L'){
@@ -297,8 +298,8 @@ int main(int argc, char **argv){
     for(const auto &s : balls)      scene.push_back(&s);
     for(const auto &t : triangles)  scene.push_back(&t);
 
-    std::vector<int>  acc_buffer(H * W * 3, 0);
-    std::vector<unsigned char> framebuffer(W * H * 3, 0);
+    std::vector<float>  acc_buffer(H * W * 3, 0);
+    std::vector<unsigned char> framebuffer(W * H * 3, 0), last_frame(W * H * 3, 0);
     int render_conut = 0;
 
     int pixel_cursor = 0;
@@ -346,7 +347,6 @@ int main(int argc, char **argv){
     init_eyeray(groups, eyeray, W, H);
     init_lightray(groups);
     // init_light_group();
-    auto start_time = std::chrono::steady_clock::now();
 
     int progress = 0;
     int total_pixel = resolution.first * resolution.second;
@@ -356,7 +356,16 @@ int main(int argc, char **argv){
 
     bool is_first = 1;
 
+
+    FILE *gp = _popen("gnuplot -persist", "w");
+    fprintf(gp, "set term wxt\n");
+    fprintf(gp, "set grid\n");
+    fflush(gp);
+    std::vector<float> rms_history;
+
     while(!glfwWindowShouldClose(window)){
+        auto start_time = std::chrono::steady_clock::now();
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -460,6 +469,7 @@ int main(int argc, char **argv){
             init_lightray(groups);
             std::vector<glm::vec3> cuda_results;
             cuda_results = run_cuda_eye_light_connect(W, H, groups);
+            float rms = 0;
             for(int i = 0; i < W; i++){
                 for(int j = 0; j < H; j++){
                     glm::vec3 col = cuda_results[j * W + i];
@@ -468,15 +478,37 @@ int main(int argc, char **argv){
                     col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
 
                     int idx = (size_t(H - 1 - j) * W + i) * 3;
-                    acc_buffer[idx + 0] += (int) (col.r * 255.0f);
-                    acc_buffer[idx + 1] += (int) (col.g * 255.0f);
-                    acc_buffer[idx + 2] += (int) (col.b * 255.0f);
+                    acc_buffer[idx + 0] += col.r;
+                    acc_buffer[idx + 1] += col.g;
+                    acc_buffer[idx + 2] += col.b;
 
-                    framebuffer[idx + 0] = (unsigned char) (acc_buffer[idx + 0] / render_conut);
-                    framebuffer[idx + 1] = (unsigned char) (acc_buffer[idx + 1] / render_conut);
-                    framebuffer[idx + 2] = (unsigned char) (acc_buffer[idx + 2] / render_conut);
+                    framebuffer[idx + 0] = (unsigned char) ((acc_buffer[idx + 0] / (float) render_conut) * 255.f);
+                    framebuffer[idx + 1] = (unsigned char) ((acc_buffer[idx + 1] / (float) render_conut) * 255.f);
+                    framebuffer[idx + 2] = (unsigned char) ((acc_buffer[idx + 2] / (float) render_conut) * 255.f);
+                    if(!is_first){
+                        for(int k = 0; k < 3; k++){
+                            rms += (framebuffer[idx + k] - last_frame[idx + k]) * (framebuffer[idx + k] - last_frame[idx + k]);
+                        }
+                    }
+                    last_frame[idx + 0] = framebuffer[idx + 0];
+                    last_frame[idx + 1] = framebuffer[idx + 1];
+                    last_frame[idx + 2] = framebuffer[idx + 2];
+
                 }
             }
+            rms = std::sqrt(rms) / 255.f;
+            rms_history.push_back(rms);
+            // std::cout << rms << std::endl;
+            fprintf(gp, "plot '-' using 1:2 with lines title 'RMS'\n");
+            for(int i = 0; i < (int) rms_history.size(); ++i){
+                fprintf(gp, "%d %f\n", i, rms_history[i]);
+            }
+            fprintf(gp, "e\n");
+            fflush(gp);        // 讓 gnuplot 立即更新
+            auto end_time = std::chrono::steady_clock::now();
+            auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "Elapsed time: " << diff.count() << " ms" << std::endl;
+            std::cout << "Iteration：" << render_conut << " Error：" << rms << std::endl;
             is_first = 0;
         }
         // std::cout << "update" << std::endl;
@@ -499,24 +531,6 @@ int main(int argc, char **argv){
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         glfwSwapBuffers(window);
-        // std::cout << "there" << std::endl;
-
-        if(pixel_cursor >= W * H && !is_writed){
-            auto end_time = std::chrono::steady_clock::now();
-            auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-            std::cout << "Elapsed time: " << diff.count() << " ms" << std::endl;
-            std::cout << "Render Finish" << std::endl;
-            is_writed = true;
-            cv::Mat img_rgb(H, W, CV_8UC3, framebuffer.data());
-            cv::Mat img_bgr, img_bgr_Flip;
-
-            cv::cvtColor(img_rgb, img_bgr, cv::COLOR_RGB2BGR);
-            cv::flip(img_bgr, img_bgr_Flip, 0);
-
-            if(!cv::imwrite("color_output.png", img_bgr_Flip)){
-                std::cerr << "彩色圖片輸出失敗！" << std::endl;
-            }
-        }
     }
 
     ImGui_ImplOpenGL3_Shutdown();

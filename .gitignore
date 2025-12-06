@@ -1,4 +1,4 @@
-input.txt
+input*
 build/
 .vscode/
 rt.zip
@@ -6,3 +6,4 @@ readme*
 document*
 img*
 tmp.txt
+color_output_0.11_1250.png
