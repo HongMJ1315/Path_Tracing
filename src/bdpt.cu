@@ -20,6 +20,11 @@ __device__ inline float3 normalize(const float3 &a){ return a / length(a); }
 // Convert CudaVec3 to float3
 __device__ inline float3 to_f3(const CudaVec3 &v){ return make_float3(v.x, v.y, v.z); }
 
+// --- 新增 Helper: float3 的次方運算 ---
+__device__ inline float3 pow_f3(const float3 &base, float exp){
+    return make_float3(powf(base.x, exp), powf(base.y, exp), powf(base.z, exp));
+}
+
 // --- Intersection Logic ---
 
 // Sphere Intersection
@@ -82,7 +87,10 @@ __device__ bool intersect_triangle(const float3 &ro, const float3 &rd, const Cud
 // Check visibility (Shadow Ray)
 // Returns transmittance (1.0 = visible, 0.0 = occluded)
 // 簡化版：如果有任何不透明物體阻擋則回傳 0，若是透明物體目前暫時忽略或可擴充
-__device__ float check_visibility(
+// Check visibility (Shadow Ray) with Volumetric Absorption
+// Returns transmittance color (float3)
+// 1.0 = 完全無遮擋, 0.0 = 完全遮擋, 中間值 = 半透明/有顏色衰減
+__device__ float3 check_visibility(
     float3 p1, float3 p2,
     const CudaSphere *spheres, int sphere_cnt,
     const CudaTriangle *triangles, int tri_cnt
@@ -91,27 +99,73 @@ __device__ float check_visibility(
     float dist = length(diff);
     float3 dir = diff / dist;
 
+    // 初始化穿透率為全白 (1.0, 1.0, 1.0)
+    float3 transmission = make_float3(1.0f, 1.0f, 1.0f);
+
+    // 稍微縮短檢測距離，避免打到 p1 或 p2 自身
+    float max_d = dist - 1e-3f;
+    float min_d = 1e-3f;
+
+    // --- 1. 檢查三角形 (假設三角形為薄膜或邊界) ---
+    // 注意：若場景複雜，這段 O(N) 遍歷會很慢，建議只對少數物件使用
     float t;
-    float max_d = dist - 1e-3f; // 稍微縮短避免打到目標點自己
-
-    // 檢查所有球體
-    for(int i = 0; i < sphere_cnt; ++i){
-        if(intersect_sphere(p1, dir, spheres[i], t, max_d)){
-            // 如果是不透明的 (refract <= 0)，則視為遮擋
-            if(spheres[i].mtl.refract <= 0.0f) return 0.0f;
-        }
-    }
-
-    // 檢查所有三角形
     for(int i = 0; i < tri_cnt; ++i){
         if(intersect_triangle(p1, dir, triangles[i], t, max_d)){
-            if(triangles[i].mtl.refract <= 0.0f) return 0.0f;
+            if(t > min_d){
+                // 如果是不透明 (refract <= 0)，則完全遮擋
+                if(triangles[i].mtl.refract <= 0.0f) return make_float3(0.0f, 0.0f, 0.0f);
+
+                // 如果是透明，乘上材質顏色 (薄膜近似)
+                transmission = transmission * to_f3(triangles[i].mtl.Kd);
+            }
         }
     }
 
-    return 1.0f;
-}
+    // --- 2. 檢查球體 (計算體積衰減) ---
+    for(int i = 0; i < sphere_cnt; ++i){
+        const CudaSphere &s = spheres[i];
 
+        // 數學推導：射線與球的交點
+        float3 oc = p1 - to_f3(s.center);
+        float b = dot(oc, dir);
+        float c = dot(oc, oc) - s.r * s.r;
+        float h = b * b - c;
+
+        // 如果射線穿過球體 (h > 0)
+        if(h > 0.0f){
+            float sqrt_h = sqrtf(h);
+            float t0 = -b - sqrt_h; // 進點
+            float t1 = -b + sqrt_h; // 出點
+
+            // 確保 t0 < t1
+            if(t0 > t1){ float temp = t0; t0 = t1; t1 = temp; }
+
+            // 計算射線線段 [min_d, max_d] 與 球體區間 [t0, t1] 的重疊長度
+            // 重疊區間 [enter, exit]
+            float enter = fmaxf(t0, min_d);
+            float exit = fminf(t1, max_d);
+
+            // 如果有重疊 (走在球體內部)
+            if(exit > enter){
+                // 如果是不透明球體，且射線穿過了它 -> 視為遮擋
+                if(s.mtl.refract <= 0.0f){
+                    return make_float3(0.0f, 0.0f, 0.0f);
+                }
+
+                // 如果是透明球體 -> 計算 Beer-Lambert 衰減
+                float path_len = exit - enter;
+                float3 sphere_color = to_f3(s.mtl.Kd);
+
+                // 公式：T = Color ^ distance 
+                // (假設 Kd 是單位距離的穿透色)
+                transmission = transmission * pow_f3(sphere_color, path_len * 5.0f);
+                // * 5.0f 是密度係數，你可以調整這個數值來控制液體濃稠度
+            }
+        }
+    }
+
+    return transmission;
+}
 // --- Main Kernel ---
 
 __global__ void eye_light_connect_kernel(
@@ -165,11 +219,16 @@ __global__ void eye_light_connect_kernel(
 
             if(cosE <= 0.0f || cosL <= 0.0f) continue;
 
-            // Visibility Check
-            float transmittance = check_visibility(ev_pos + wi * 1e-3f, lv_pos, spheres, sphere_cnt, triangles, tri_cnt);
+            // --- 呼叫新的 check_visibility ---
+                        // 這裡回傳的是顏色向量 (float3)，包含了光衰減
+            float3 transmittance = check_visibility(ev_pos + wi * 1e-3f, lv_pos, spheres, sphere_cnt, triangles, tri_cnt);
 
-            if(transmittance > 0.0f){
+            // 判斷條件：只要任一通道還有光 (大於 0) 就繼續計算
+            if(transmittance.x > 0.0f || transmittance.y > 0.0f || transmittance.z > 0.0f){
                 float G = (cosE * cosL) / dist2;
+
+                // 公式修正：加入 transmittance 乘積
+                // contrib = EyeThroughput * BRDF * G * LightThroughput * Transmittance
                 float3 contrib = ev_tp * fE * G * lv_tp * transmittance;
                 total_L = total_L + contrib;
             }

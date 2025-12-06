@@ -4,7 +4,7 @@
 #include <corecrt_math_defines.h>
 
 #define LIGHT_COLOR (glm::vec3(0.01f,  .01f, .01f))
-#define LIGHT_POS (glm::vec3(0, 0.49, 0))
+#define LIGHT_POS (glm::vec3(0, 0.49, 0.2))
 #define LIGHT_R 0.25f
 #define LIGHT_SAMPLE 8000
 #define LIGHT_DEPTH 3
@@ -242,11 +242,25 @@ glm::vec3 lightray_tracer(Ray light_ray,
     src.obj = nullptr;           // 特別標記：這是光源，不是場景物件
 
     light_subpath.push_back(src);
+
     for(int depth = 0; depth < LIGHT_DEPTH; depth++){
 
         Hit h = first_hit(light_ray, groups);
         if(!h.hit) break;
         glm::vec3 n = glm::normalize(h.normal);
+
+        float rn = rng_uniform01();
+        if(h.obj->mtl.reflect > 0 && rn <= h.obj->mtl.reflect){
+            glm::vec3 I = glm::normalize(light_ray.vec);
+            glm::vec3 N = n;
+
+            glm::vec3 R = glm::reflect(I, N);
+
+            light_ray.vec = R;
+            light_ray.point = h.pos + light_ray.vec * 1e-4f;
+            depth--;
+            continue;
+        }
 
         if(h.obj->mtl.refract > 0){
             glm::vec3 I = glm::normalize(light_ray.vec);
@@ -368,6 +382,19 @@ std::vector<EyeVertex> eyeray_tracer(Ray &eye_ray,
         Hit h = first_hit(eye_ray, groups);
         if(!h.hit) break;
         glm::vec3 n = glm::normalize(h.normal);
+
+        float rn = rng_uniform01();
+        if(h.obj->mtl.reflect > 0 && rn <= h.obj->mtl.reflect){
+            glm::vec3 I = glm::normalize(eye_ray.vec);
+            glm::vec3 N = n;
+
+            glm::vec3 R = glm::reflect(I, N);
+
+            eye_ray.vec = R;
+            eye_ray.point = h.pos + eye_ray.vec * 1e-4f;
+            depth--;
+            continue;
+        }
 
         if(h.obj->mtl.refract > 0){
             glm::vec3 I = glm::normalize(eye_ray.vec);
