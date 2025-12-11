@@ -100,7 +100,7 @@ void gen_eyeray(std::vector<EyeRayInfo> &eyeray, Camera ori_cam,
             EyeRayInfo info;
             info.i = i, info.j = j;
             info.ray = ray;
-
+            info.sample = s;
             eyeray.push_back(info);
         }
     }
@@ -214,9 +214,10 @@ int main(int argc, char **argv){
             glm::vec3 color;
             input >> color;
             input >> ka >> kd >> ks >> mtl.reflect >> mtl.refract;
-            mtl.Kg = color * ka;
-            mtl.Kd = color * kd;
-            mtl.Ks = color * ks;
+            float total = ka + kd + ks;
+            mtl.Kg = color * (ka / total);
+            mtl.Kd = color * (kd / total);
+            mtl.Ks = color * (ks / total);
             // std::cout << color << " " << mtl.kg << " " << mtl.Kd << " " << mtl.Ks << std::endl;
             // std::cout << "read M" << std::endl;
         }
@@ -342,16 +343,19 @@ int main(int argc, char **argv){
 
 
     std::vector<EyeRayInfo> eyeray;
-    gen_eyeray(eyeray, ori_cam, W, H, UL, dx, dy);
+    // gen_eyeray(eyeray, ori_cam, W, H, UL, dx, dy);
 
-    init_eyeray(groups, eyeray, W, H);
-    init_lightray(groups);
+    // init_eyeray(groups, eyeray, W, H);
+    // init_lightray(groups);
     // init_light_group();
 
     int progress = 0;
     int total_pixel = resolution.first * resolution.second;
     int percent = total_pixel / 100;
 
+    auto end_time = std::chrono::steady_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
+    auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
 
     bool is_first = 1;
@@ -364,7 +368,6 @@ int main(int argc, char **argv){
     std::vector<float> rms_history;
 
     while(!glfwWindowShouldClose(window)){
-        auto start_time = std::chrono::steady_clock::now();
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -384,7 +387,9 @@ int main(int argc, char **argv){
             cv::cvtColor(img_rgb, img_bgr, cv::COLOR_RGB2BGR);
             cv::flip(img_bgr, img_bgr_Flip, 0);
 
-            if(!cv::imwrite("color_output.png", img_bgr_Flip)){
+            std::string file_name = "result_" + std::to_string(render_conut) + "_" + std::to_string(rms_history.back()) + ".png";
+            std::cout << file_name << std::endl;
+            if(!cv::imwrite(file_name, img_bgr_Flip)){
                 std::cerr << "彩色圖片輸出失敗！" << std::endl;
             }
         }
@@ -463,10 +468,18 @@ int main(int argc, char **argv){
         else{
             // col = eye_light_connect(i, j, groups);
             // col = light_debuger(i, j, UL, dx, dy, groups, ori_cam);
+            start_time = std::chrono::steady_clock::now();
             gen_eyeray(eyeray, ori_cam, W, H, UL, dx, dy);
             render_conut++;
             init_eyeray(groups, eyeray, W, H);
+            end_time = std::chrono::steady_clock::now();
+            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "Generate Eye Ray Elapsed time: " << diff.count() << " ms" << std::endl;
+            start_time = std::chrono::steady_clock::now();
             init_lightray(groups);
+            end_time = std::chrono::steady_clock::now();
+            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "Generate Light Ray Elapsed time: " << diff.count() << " ms" << std::endl;
             std::vector<glm::vec3> cuda_results;
             cuda_results = run_cuda_eye_light_connect(W, H, groups);
             float rms = 0;
@@ -505,9 +518,9 @@ int main(int argc, char **argv){
             }
             fprintf(gp, "e\n");
             fflush(gp);        // 讓 gnuplot 立即更新
-            auto end_time = std::chrono::steady_clock::now();
-            auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-            std::cout << "Elapsed time: " << diff.count() << " ms" << std::endl;
+            end_time = std::chrono::steady_clock::now();
+            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "Render Elapsed time: " << diff.count() << " ms" << std::endl;
             std::cout << "Iteration：" << render_conut << " Error：" << rms << std::endl;
             is_first = 0;
         }

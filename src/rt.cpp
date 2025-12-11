@@ -3,11 +3,11 @@
 #include <iostream>
 #include <corecrt_math_defines.h>
 
-#define LIGHT_COLOR (glm::vec3(0.01f,  .01f, .01f))
+#define LIGHT_COLOR (glm::vec3(0.7f,  .7f, .7f))
 #define LIGHT_POS (glm::vec3(0, 0.49, 0.2))
 #define LIGHT_R 0.25f
 #define LIGHT_SAMPLE 8000
-#define LIGHT_DEPTH 3
+#define LIGHT_DEPTH 5
 
 #define EYE_DEPTH 3
 
@@ -15,6 +15,7 @@ std::vector<LightVertex> light_subpath;
 std::vector<Light> light;
 std::map<int, AABB> light_groups, eye_groups;
 std::vector<std::vector<std::vector<EyeVertex> > > screen_info;
+
 
 std::ostream &operator<<(std::ostream &os, const glm::vec3 vec){
     os << "(" << vec.x << ", " << vec.y << ", " << vec.z << ")";
@@ -188,7 +189,7 @@ void init_lightray(std::map<int, AABB> &groups){
         glm::vec3 light_pos = LIGHT_POS + glm::vec3(
             random_float(-1, 1) * LIGHT_R, 0, random_float(-1, 1) * LIGHT_R);
         glm::vec3 light_dir = sample_hemisphere_cosine(glm::vec3(0, -1, 0));
-        glm::vec3 accumulated = lightray_tracer(Ray(light_pos, light_dir, 1, RayType::LIGHT), groups, LIGHT_COLOR);
+        glm::vec3 accumulated = lightray_tracer(Ray(light_pos, light_dir, 1, RayType::LIGHT), groups, (LIGHT_COLOR * 120.f/(float)LIGHT_SAMPLE));
 
         // std::cout << light_pos << " " << light_dir << std::endl;
 
@@ -233,12 +234,12 @@ glm::vec3 lightray_tracer(Ray light_ray,
     glm::vec3 throughput){
     glm::vec3 accumulated(0.0f);
 
-
+    // std::cout << throughput << std::endl;
     LightVertex src;
     src.pos = light_ray.point;
     src.normal = light_ray.vec;
     src.wi = -light_ray.vec;        // 對應出射方向
-    src.throughput = LIGHT_COLOR;       // 初始光強（可再除以 pdf_area 等）
+    src.throughput = throughput;       // 初始光強（可再除以 pdf_area 等）
     src.obj = nullptr;           // 特別標記：這是光源，不是場景物件
 
     light_subpath.push_back(src);

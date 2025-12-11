@@ -43,6 +43,11 @@ struct CudaEyeVertex{
     CudaMaterial mtl;
 };
 
+struct CudaRay{
+    CudaVec3 point, vec;
+};
+
+
 // CUDA 函式入口
 // output_buffer: 存放結果顏色 (W * H)
 void cuda_eye_light_connect_wrapper(

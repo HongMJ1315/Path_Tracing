@@ -158,7 +158,7 @@ __device__ float3 check_visibility(
 
                 // 公式：T = Color ^ distance 
                 // (假設 Kd 是單位距離的穿透色)
-                transmission = transmission * pow_f3(sphere_color, path_len * 5.0f);
+                transmission = transmission * pow_f3(sphere_color, path_len * 5.f);
                 // * 5.0f 是密度係數，你可以調整這個數值來控制液體濃稠度
             }
         }

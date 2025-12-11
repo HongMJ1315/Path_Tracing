@@ -27,7 +27,7 @@ struct EyeVertex{
 };
 
 struct EyeRayInfo{
-    int i, j;
+    int i, j, sample;
     Ray ray;
 };
 
