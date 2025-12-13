@@ -213,11 +213,12 @@ int main(int argc, char **argv){
             float ka, kd, ks;
             glm::vec3 color;
             input >> color;
-            input >> ka >> kd >> ks >> mtl.reflect >> mtl.refract;
+            input >> ka >> kd >> ks >> mtl.reflect >> mtl.refract >> mtl.exp;
             float total = ka + kd + ks;
-            mtl.Kg = color * (ka / total);
-            mtl.Kd = color * (kd / total);
-            mtl.Ks = color * (ks / total);
+            mtl.Kg = color * ka;
+            mtl.Kd = color * kd;
+            mtl.Ks = color * ks;
+            mtl.glossy = ka;
             // std::cout << color << " " << mtl.kg << " " << mtl.Kd << " " << mtl.Ks << std::endl;
             // std::cout << "read M" << std::endl;
         }
@@ -343,6 +344,7 @@ int main(int argc, char **argv){
 
 
     std::vector<EyeRayInfo> eyeray;
+    resize_screen_info(W, H);
     // gen_eyeray(eyeray, ori_cam, W, H, UL, dx, dy);
 
     // init_eyeray(groups, eyeray, W, H);
@@ -366,7 +368,6 @@ int main(int argc, char **argv){
     fprintf(gp, "set grid\n");
     fflush(gp);
     std::vector<float> rms_history;
-
     while(!glfwWindowShouldClose(window)){
 
         ImGui_ImplOpenGL3_NewFrame();

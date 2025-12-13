@@ -13,6 +13,7 @@ struct Material{
     glm::vec3 Kg{ 0.0f };   // ambient
     glm::vec3 Kd{ 0.0f };   // diffuse
     glm::vec3 Ks{ 0.0f };   // specular
+    float glossy{0};
     float exp{ 32.0f };     // shininess
     float reflect{ 0.0f };  // reflectivity
     float refract{ 0.0f };  // reflectivity

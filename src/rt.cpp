@@ -2,6 +2,7 @@
 #include <map>
 #include <iostream>
 #include <corecrt_math_defines.h>
+#include <omp.h>
 
 #define LIGHT_COLOR (glm::vec3(0.7f,  .7f, .7f))
 #define LIGHT_POS (glm::vec3(0, 0.49, 0.2))
@@ -12,9 +13,9 @@
 #define EYE_DEPTH 3
 
 std::vector<LightVertex> light_subpath;
+std::vector<std::vector<std::vector<EyeVertex> > > screen_info;
 std::vector<Light> light;
 std::map<int, AABB> light_groups, eye_groups;
-std::vector<std::vector<std::vector<EyeVertex> > > screen_info;
 
 
 std::ostream &operator<<(std::ostream &os, const glm::vec3 vec){
@@ -189,7 +190,7 @@ void init_lightray(std::map<int, AABB> &groups){
         glm::vec3 light_pos = LIGHT_POS + glm::vec3(
             random_float(-1, 1) * LIGHT_R, 0, random_float(-1, 1) * LIGHT_R);
         glm::vec3 light_dir = sample_hemisphere_cosine(glm::vec3(0, -1, 0));
-        glm::vec3 accumulated = lightray_tracer(Ray(light_pos, light_dir, 1, RayType::LIGHT), groups, (LIGHT_COLOR * 120.f/(float)LIGHT_SAMPLE));
+        glm::vec3 accumulated = lightray_tracer(Ray(light_pos, light_dir, 1, RayType::LIGHT), groups, (LIGHT_COLOR * 120.f / (float) LIGHT_SAMPLE));
 
         // std::cout << light_pos << " " << light_dir << std::endl;
 
@@ -229,6 +230,15 @@ glm::vec3 sample_hemisphere_cosine(const glm::vec3 &normal){
     return glm::normalize(world);
 }
 
+// 產生單位球內的隨機向量 (用於 Glossy Jitter)
+glm::vec3 random_in_unit_sphere(){
+    while(true){
+        glm::vec3 p = glm::vec3(random_float(-1, 1), random_float(-1, 1), random_float(-1, 1));
+        if(glm::length(p) >= 1.0f) continue;
+        return p;
+    }
+}
+
 glm::vec3 lightray_tracer(Ray light_ray,
     std::map<int, AABB> &groups,
     glm::vec3 throughput){
@@ -238,9 +248,9 @@ glm::vec3 lightray_tracer(Ray light_ray,
     LightVertex src;
     src.pos = light_ray.point;
     src.normal = light_ray.vec;
-    src.wi = -light_ray.vec;        // 對應出射方向
-    src.throughput = throughput;       // 初始光強（可再除以 pdf_area 等）
-    src.obj = nullptr;           // 特別標記：這是光源，不是場景物件
+    src.wi = -light_ray.vec;
+    src.throughput = throughput;
+    src.obj = nullptr;
 
     light_subpath.push_back(src);
 
@@ -296,20 +306,45 @@ glm::vec3 lightray_tracer(Ray light_ray,
             continue;
         }
 
-        throughput *= h.obj->mtl.Kd;
+        float diff_glos = rng_uniform01();
+        if(diff_glos <= h.obj->mtl.glossy){
+            glm::vec3 I = glm::normalize(light_ray.vec);
+            glm::vec3 N = n;
+            glm::vec3 R = glm::reflect(I, N);
 
-        LightVertex v;
-        v.pos = h.pos;
-        v.normal = n;
-        v.wi = -light_ray.vec;
-        v.throughput = throughput;
-        v.obj = h.obj;
-        light_subpath.push_back(v);
+            // 計算粗糙度
+            float roughness = (h.obj->mtl.exp > 1000.0f) ? 0.0f : (1.0f / (h.obj->mtl.exp * 0.05f + 0.001f));
 
-        accumulated += throughput;
+            glm::vec3 jitter = random_in_unit_sphere() * roughness;
+            glm::vec3 new_dir = glm::normalize(R + jitter);
 
-        glm::vec3 newDir = sample_hemisphere_cosine(n);
-        light_ray = Ray(h.pos + newDir * 1e-4f, newDir, 1, RayType::LIGHT);
+            if(glm::dot(new_dir, N) <= 0.0f){
+                new_dir = new_dir - 2.0f * glm::dot(new_dir, N) * N;
+            }
+
+            new_dir = glm::normalize(new_dir);
+
+            light_ray.vec = new_dir;
+            light_ray.point = h.pos + light_ray.vec * 1e-4f;
+            depth--;
+            continue;
+        }
+        else{
+            throughput *= h.obj->mtl.Kd;
+
+            LightVertex v;
+            v.pos = h.pos;
+            v.normal = n;
+            v.wi = -light_ray.vec;
+            v.throughput = throughput;
+            v.obj = h.obj;
+            light_subpath.push_back(v);
+
+            accumulated += throughput;
+
+            glm::vec3 newDir = sample_hemisphere_cosine(n);
+            light_ray = Ray(h.pos + newDir * 1e-4f, newDir, 1, RayType::LIGHT);
+        }
     }
 
     return accumulated;
@@ -360,12 +395,16 @@ void init_light_group(){
 
 }
 
+void resize_screen_info(int W, int H){
+    screen_info.resize(W, std::vector<std::vector<EyeVertex> >(H));
+}
 
 void init_eyeray(std::map<int, AABB> &groups, std::vector<EyeRayInfo> &eye_ray,
     int W, int H){
-    screen_info.resize(W, std::vector<std::vector<EyeVertex> >(H));
     int eyeray_cnt = 0;
+#pragma omp parallel for schedule(dynamic, 128)
     for(int i = 0; i < eye_ray.size(); i++){
+        screen_info[eye_ray[i].i][eye_ray[i].j].clear();
         std::vector<EyeVertex> res = eyeray_tracer(eye_ray[i].ray, groups, glm::vec3(1, 1, 1));
         screen_info[eye_ray[i].i][eye_ray[i].j] = res;
         eyeray_cnt += res.size();
@@ -430,20 +469,42 @@ std::vector<EyeVertex> eyeray_tracer(Ray &eye_ray,
             continue;
         }
 
+        float diff_glos = rng_uniform01();
+        if(diff_glos <= h.obj->mtl.glossy){
+            glm::vec3 I = glm::normalize(eye_ray.vec);
+            glm::vec3 N = n;
+            glm::vec3 R = glm::reflect(I, N);
 
-        throughput *= h.obj->mtl.Kd;
+            float roughness = (h.obj->mtl.exp > 1000.0f) ? 0.0f : (1.0f / (h.obj->mtl.exp * 0.05f + 0.001f));
 
-        EyeVertex v;
-        v.pos = h.pos;
-        v.normal = n;
-        v.wi = -eye_ray.vec;
-        v.throughput = throughput;
-        v.obj = h.obj;
-        ret.push_back(v);
+            glm::vec3 jitter = random_in_unit_sphere() * roughness;
+            glm::vec3 new_dir = glm::normalize(R + jitter);
 
+            if(glm::dot(new_dir, N) <= 0.0f){
+                new_dir = new_dir - 2.0f * glm::dot(new_dir, N) * N;
+            }
 
-        glm::vec3 newDir = sample_hemisphere_cosine(n);
-        eye_ray = Ray(h.pos + newDir * 1e-4f, newDir, 1, RayType::EYE);
+            new_dir = glm::normalize(new_dir);
+
+            eye_ray.vec = new_dir;
+            eye_ray.point = h.pos + eye_ray.vec * 1e-4f;
+            depth--;
+            continue;
+        }
+        else{
+            throughput *= h.obj->mtl.Kd;
+
+            EyeVertex v;
+            v.pos = h.pos;
+            v.normal = n;
+            v.wi = -eye_ray.vec;
+            v.throughput = throughput;
+            v.obj = h.obj;
+            ret.push_back(v);
+
+            glm::vec3 newDir = sample_hemisphere_cosine(n);
+            eye_ray = Ray(h.pos + newDir * 1e-4f, newDir, 1, RayType::EYE);
+        }
     }
     return ret;
 }
@@ -498,9 +559,6 @@ glm::vec3 eye_light_connect(int i, int j, std::map<int, AABB> &groups){
                     break;
                 }
                 else{
-                    // 透光材 → 視為可穿透
-                    // 你可以在這裡決定如何衰減，例如：
-                    // transmittance *= mtlS.Kd; // 或增加一個 mtlS.transmit
 
                     shadow_ray.point = shadow_hit.pos + shadow_ray.vec * 1e-4f;
                     continue;
