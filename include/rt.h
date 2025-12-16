@@ -9,6 +9,11 @@
 #define MAX_DPETH 1
 #define SAMPLE 5.f
 
+#define LIGHT_DEPTH 1
+#define TRACE_MODE 0
+
+#define EYE_DEPTH 3
+
 struct LightVertex{
     glm::vec3 pos;
     glm::vec3 normal;

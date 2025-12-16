@@ -23,6 +23,7 @@
 
 #define RENDER_THREADS 5
 #define GROUPING 1
+#define MAX_ITER 25
 
 // Window size
 glm::vec3 eye;
@@ -369,7 +370,39 @@ int main(int argc, char **argv){
     fflush(gp);
     std::vector<float> rms_history;
     while(!glfwWindowShouldClose(window)){
+        auto save_image = [&](int render_count){
 
+            if(framebuffer.empty()){
+                std::cerr << "[Error] Framebuffer is empty!" << std::endl;
+                return;
+            }
+
+            cv::Mat img_rgb(H, W, CV_8UC3, (void *) framebuffer.data());
+
+            cv::Mat img_bgr, img_bgr_Flip;
+
+            cv::cvtColor(img_rgb, img_bgr, cv::COLOR_RGB2BGR);
+            cv::flip(img_bgr, img_bgr_Flip, 0);
+
+            float current_rms = rms_history.empty() ? 0.0f : rms_history.back();
+
+            std::stringstream ss;
+            ss << "result_E" << EYE_DEPTH
+                << "_L" << LIGHT_DEPTH
+                << "_M" << TRACE_MODE
+                << "_" << render_count 
+                << "_" << std::fixed << std::setprecision(4) << current_rms 
+                << ".png";
+
+            std::string file_name = ss.str();
+            std::cout << "[Save] " << file_name << std::endl;
+
+            // 6. 寫入檔案
+            // 使用 std::vector 的 compression_params 可以控制壓縮率 (選用)
+            if(!cv::imwrite(file_name, img_bgr_Flip)){
+                std::cerr << "[Error] Failed to save image: " << file_name << std::endl;
+            }
+        };
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -377,22 +410,12 @@ int main(int argc, char **argv){
         glfwPollEvents();
 
         ImGui::Begin("F and F/");
-        ImGui::SliderFloat("F", &F, 14.f, 200.0f);
-        ImGui::SliderFloat("F/", &A, 1.4f, 32.f);
-        ImGui::SliderFloat("Focus Dist", &focus_dist, 0.1f, 10.0f); // 可視需求調整範圍
-        ImGui::Checkbox("Depth Field", &is_depth);
+        // ImGui::SliderFloat("F", &F, 14.f, 200.0f);
+        // ImGui::SliderFloat("F/", &A, 1.4f, 32.f);
+        // ImGui::SliderFloat("Focus Dist", &focus_dist, 0.1f, 10.0f); // 可視需求調整範圍
+        // ImGui::Checkbox("Depth Field", &is_depth);
         if(ImGui::Button("Save Image")){
-            cv::Mat img_rgb(H, W, CV_8UC3, framebuffer.data());
-            cv::Mat img_bgr, img_bgr_Flip;
-
-            cv::cvtColor(img_rgb, img_bgr, cv::COLOR_RGB2BGR);
-            cv::flip(img_bgr, img_bgr_Flip, 0);
-
-            std::string file_name = "result_" + std::to_string(render_conut) + "_" + std::to_string(rms_history.back()) + ".png";
-            std::cout << file_name << std::endl;
-            if(!cv::imwrite(file_name, img_bgr_Flip)){
-                std::cerr << "彩色圖片輸出失敗！" << std::endl;
-            }
+            save_image(render_conut);
         }
 
         ImGui::End();
@@ -469,64 +492,68 @@ int main(int argc, char **argv){
         else{
             // col = eye_light_connect(i, j, groups);
             // col = light_debuger(i, j, UL, dx, dy, groups, ori_cam);
-            start_time = std::chrono::steady_clock::now();
-            gen_eyeray(eyeray, ori_cam, W, H, UL, dx, dy);
-            render_conut++;
-            init_eyeray(groups, eyeray, W, H);
-            end_time = std::chrono::steady_clock::now();
-            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-            std::cout << "Generate Eye Ray Elapsed time: " << diff.count() << " ms" << std::endl;
-            start_time = std::chrono::steady_clock::now();
-            init_lightray(groups);
-            end_time = std::chrono::steady_clock::now();
-            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-            std::cout << "Generate Light Ray Elapsed time: " << diff.count() << " ms" << std::endl;
-            std::vector<glm::vec3> cuda_results;
-            cuda_results = run_cuda_eye_light_connect(W, H, groups);
-            float rms = 0;
-            for(int i = 0; i < W; i++){
-                for(int j = 0; j < H; j++){
-                    glm::vec3 col = cuda_results[j * W + i];
+            if(render_conut < MAX_ITER){
+                std::cout << "Render Iteration: " << render_conut + 1 << std::endl;
+                start_time = std::chrono::steady_clock::now();
+                gen_eyeray(eyeray, ori_cam, W, H, UL, dx, dy);
+                render_conut++;
+                init_eyeray(groups, eyeray, W, H);
+                end_time = std::chrono::steady_clock::now();
+                diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+                std::cout << "Generate Eye Ray Elapsed time: " << diff.count() << " ms" << std::endl;
+                start_time = std::chrono::steady_clock::now();
+                init_lightray(groups);
+                end_time = std::chrono::steady_clock::now();
+                diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+                std::cout << "Generate Light Ray Elapsed time: " << diff.count() << " ms" << std::endl;
+                std::vector<glm::vec3> cuda_results;
+                cuda_results = run_cuda_eye_light_connect(W, H, groups);
+                float rms = 0;
+                for(int i = 0; i < W; i++){
+                    for(int j = 0; j < H; j++){
+                        glm::vec3 col = cuda_results[j * W + i];
 
-                    col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
-                    col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
+                        col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
+                        col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
 
-                    int idx = (size_t(H - 1 - j) * W + i) * 3;
-                    acc_buffer[idx + 0] += col.r;
-                    acc_buffer[idx + 1] += col.g;
-                    acc_buffer[idx + 2] += col.b;
+                        int idx = (size_t(H - 1 - j) * W + i) * 3;
+                        acc_buffer[idx + 0] += col.r;
+                        acc_buffer[idx + 1] += col.g;
+                        acc_buffer[idx + 2] += col.b;
 
-                    framebuffer[idx + 0] = (unsigned char) ((acc_buffer[idx + 0] / (float) render_conut) * 255.f);
-                    framebuffer[idx + 1] = (unsigned char) ((acc_buffer[idx + 1] / (float) render_conut) * 255.f);
-                    framebuffer[idx + 2] = (unsigned char) ((acc_buffer[idx + 2] / (float) render_conut) * 255.f);
-                    if(!is_first){
-                        for(int k = 0; k < 3; k++){
-                            rms += (framebuffer[idx + k] - last_frame[idx + k]) * (framebuffer[idx + k] - last_frame[idx + k]);
+                        framebuffer[idx + 0] = (unsigned char) ((acc_buffer[idx + 0] / (float) render_conut) * 255.f);
+                        framebuffer[idx + 1] = (unsigned char) ((acc_buffer[idx + 1] / (float) render_conut) * 255.f);
+                        framebuffer[idx + 2] = (unsigned char) ((acc_buffer[idx + 2] / (float) render_conut) * 255.f);
+                        if(!is_first){
+                            for(int k = 0; k < 3; k++){
+                                rms += (framebuffer[idx + k] - last_frame[idx + k]) * (framebuffer[idx + k] - last_frame[idx + k]);
+                            }
                         }
-                    }
-                    last_frame[idx + 0] = framebuffer[idx + 0];
-                    last_frame[idx + 1] = framebuffer[idx + 1];
-                    last_frame[idx + 2] = framebuffer[idx + 2];
+                        last_frame[idx + 0] = framebuffer[idx + 0];
+                        last_frame[idx + 1] = framebuffer[idx + 1];
+                        last_frame[idx + 2] = framebuffer[idx + 2];
 
+                    }
                 }
+                rms = std::sqrt(rms) / 255.f;
+                rms_history.push_back(rms);
+                // std::cout << rms << std::endl;
+                fprintf(gp, "plot '-' using 1:2 with lines title 'RMS'\n");
+                for(int i = 0; i < (int) rms_history.size(); ++i){
+                    fprintf(gp, "%d %f\n", i, rms_history[i]);
+                }
+                fprintf(gp, "e\n");
+                fflush(gp);        // 讓 gnuplot 立即更新
+                end_time = std::chrono::steady_clock::now();
+                diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+                std::cout << "Render Elapsed time: " << diff.count() << " ms" << std::endl;
+                std::cout << "Iteration：" << render_conut << " Error：" << rms << std::endl;
+                is_first = 0;
             }
-            rms = std::sqrt(rms) / 255.f;
-            rms_history.push_back(rms);
-            // std::cout << rms << std::endl;
-            fprintf(gp, "plot '-' using 1:2 with lines title 'RMS'\n");
-            for(int i = 0; i < (int) rms_history.size(); ++i){
-                fprintf(gp, "%d %f\n", i, rms_history[i]);
-            }
-            fprintf(gp, "e\n");
-            fflush(gp);        // 讓 gnuplot 立即更新
-            end_time = std::chrono::steady_clock::now();
-            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-            std::cout << "Render Elapsed time: " << diff.count() << " ms" << std::endl;
-            std::cout << "Iteration：" << render_conut << " Error：" << rms << std::endl;
-            is_first = 0;
+            // std::cout << "update" << std::endl;
+            save_image(render_conut);
+            pixel_cursor = end;
         }
-        // std::cout << "update" << std::endl;
-        pixel_cursor = end;
 
         // */
         glBindTexture(GL_TEXTURE_2D, tex);

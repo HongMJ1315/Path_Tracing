@@ -58,5 +58,6 @@ void cuda_eye_light_connect_wrapper(
     const CudaSphere *h_spheres, int sphere_count,
     const CudaTriangle *h_triangles, int tri_count,
     const CudaVec3 &light_color,
-    CudaVec3 *output_buffer
+    CudaVec3 *output_buffer,
+    int connect_mode // <--- 新增這個開關
 );

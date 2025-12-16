@@ -6,11 +6,8 @@
 
 #define LIGHT_COLOR (glm::vec3(0.7f,  .7f, .7f))
 #define LIGHT_POS (glm::vec3(0, 0.49, 0.2))
-#define LIGHT_R 0.25f
+#define LIGHT_R 0.005f
 #define LIGHT_SAMPLE 8000
-#define LIGHT_DEPTH 5
-
-#define EYE_DEPTH 3
 
 std::vector<LightVertex> light_subpath;
 std::vector<std::vector<std::vector<EyeVertex> > > screen_info;
@@ -129,7 +126,8 @@ std::vector<glm::vec3> run_cuda_eye_light_connect(
         h_spheres.data(), h_spheres.size(),
         h_triangles.data(), h_triangles.size(),
         to_cv3(LIGHT_COLOR), // 假設 LIGHT_COLOR 在 rt.h 有定義
-        cuda_output.data()
+        cuda_output.data(),
+        TRACE_MODE // connect_mode = 1 for eye-light connection
     );
 
     // 6. Convert back to glm::vec3 for existing pipeline

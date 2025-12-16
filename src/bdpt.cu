@@ -175,12 +175,12 @@ __global__ void eye_light_connect_kernel(
     CudaSphere *spheres, int sphere_cnt,
     CudaTriangle *triangles, int tri_cnt,
     float3 light_color,
-    CudaVec3 *output
+    CudaVec3 *output,
+    int connect_mode // <--- 接收開關參數
 ){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= W * H) return;
 
-    // 取得該 Pixel 對應的 Eye Path 資訊
     int offset = eye_offsets[idx];
     int count = eye_counts[idx];
 
@@ -191,7 +191,7 @@ __global__ void eye_light_connect_kernel(
         return;
     }
 
-    // 雙向連接迴圈：Eye Path 的每個點 <--> Light Path 的每個點
+    // Eye Path Loop
     for(int i = 0; i < count; ++i){
         CudaEyeVertex ev = eye_paths_flat[offset + i];
         float3 ev_pos = to_f3(ev.pos);
@@ -201,8 +201,21 @@ __global__ void eye_light_connect_kernel(
 
         float3 fE = ev_kd * (1.0f / 3.14159265359f); // Lambert
 
+        // Light Path Loop
         for(int j = 0; j < light_cnt; ++j){
             CudaLightVertex lv = light_path[j];
+
+            // --- [關鍵修改] 模式切換邏輯 ---
+            // connect_mode == 0 (Path Tracing / Next Event Estimation):
+            // 僅當目標頂點是「光源本身」時才進行連接。
+            // 這樣就等於只做 Direct Light Sampling (NEE)。
+            if(connect_mode == 0 && !lv.is_light_source){
+                continue;
+            }
+            // connect_mode == 1 (BDPT):
+            // 不做過濾，連接所有光路上的點 (VPLs)。
+            // -----------------------------
+
             float3 lv_pos = to_f3(lv.pos);
             float3 lv_norm = normalize(to_f3(lv.normal));
             float3 lv_tp = to_f3(lv.throughput);
@@ -219,16 +232,10 @@ __global__ void eye_light_connect_kernel(
 
             if(cosE <= 0.0f || cosL <= 0.0f) continue;
 
-            // --- 呼叫新的 check_visibility ---
-                        // 這裡回傳的是顏色向量 (float3)，包含了光衰減
             float3 transmittance = check_visibility(ev_pos + wi * 1e-3f, lv_pos, spheres, sphere_cnt, triangles, tri_cnt);
 
-            // 判斷條件：只要任一通道還有光 (大於 0) 就繼續計算
             if(transmittance.x > 0.0f || transmittance.y > 0.0f || transmittance.z > 0.0f){
                 float G = (cosE * cosL) / dist2;
-
-                // 公式修正：加入 transmittance 乘積
-                // contrib = EyeThroughput * BRDF * G * LightThroughput * Transmittance
                 float3 contrib = ev_tp * fE * G * lv_tp * transmittance;
                 total_L = total_L + contrib;
             }
@@ -250,8 +257,10 @@ void cuda_eye_light_connect_wrapper(
     const CudaSphere *h_spheres, int sphere_count,
     const CudaTriangle *h_triangles, int tri_count,
     const CudaVec3 &light_color,
-    CudaVec3 *output_buffer
+    CudaVec3 *output_buffer,
+    int connect_mode // <--- 傳入參數
 ){
+    // ... (記憶體配置與複製代碼保持不變) ...
     // 1. Allocate Device Memory
     CudaLightVertex *d_light_path;
     CudaEyeVertex *d_eye_paths;
@@ -261,9 +270,8 @@ void cuda_eye_light_connect_wrapper(
     CudaVec3 *d_output;
 
     size_t sz_lp = light_path_size * sizeof(CudaLightVertex);
-    size_t sz_ep = h_eye_offsets[W * H - 1] + h_eye_counts[W * H - 1]; // 總 EyeVertex 數量 (估算，嚴謹應傳入總數)
-    // 修正：應從外部傳入 total_eye_vertices 數量，此處假設呼叫者知道如何傳遞，
-    // 為簡化，我們用 offsets 最後一個元素的 index + count 來計算總大小
+    // ... (計算 sz_ep_bytes 邏輯不變) ...
+    // 假設你在前面已經算好 sz_ep_bytes
     int total_eye_v = 0;
     for(int i = 0; i < W * H; i++) total_eye_v += h_eye_counts[i];
     size_t sz_ep_bytes = total_eye_v * sizeof(CudaEyeVertex);
@@ -277,6 +285,7 @@ void cuda_eye_light_connect_wrapper(
     cudaMalloc(&d_output, W * H * sizeof(CudaVec3));
 
     // 2. Copy Data to Device
+    // ... (Copy 邏輯不變) ...
     cudaMemcpy(d_light_path, h_light_path, sz_lp, cudaMemcpyHostToDevice);
     cudaMemcpy(d_eye_paths, h_eye_paths_flat, sz_ep_bytes, cudaMemcpyHostToDevice);
     cudaMemcpy(d_eye_offsets, h_eye_offsets, W * H * sizeof(int), cudaMemcpyHostToDevice);
@@ -297,7 +306,8 @@ void cuda_eye_light_connect_wrapper(
         d_spheres, sphere_count,
         d_triangles, tri_count,
         lc,
-        d_output
+        d_output,
+        connect_mode // <--- 傳入 Kernel
         );
 
     cudaDeviceSynchronize();
