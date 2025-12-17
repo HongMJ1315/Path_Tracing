@@ -1,12 +1,12 @@
 #include "rt.h"
 #include <map>
 #include <iostream>
-#include <corecrt_math_defines.h>
+// #include <corecrt_math_defines.h>
 #include <omp.h>
 
 #define LIGHT_COLOR (glm::vec3(0.7f,  .7f, .7f))
 #define LIGHT_POS (glm::vec3(0, 0.49, 0.2))
-#define LIGHT_R 0.005f
+#define LIGHT_R 0.25f
 #define LIGHT_SAMPLE 8000
 
 std::vector<LightVertex> light_subpath;

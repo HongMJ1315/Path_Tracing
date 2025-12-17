@@ -9,8 +9,8 @@
 #define MAX_DPETH 1
 #define SAMPLE 5.f
 
-#define LIGHT_DEPTH 1
-#define TRACE_MODE 0
+#define LIGHT_DEPTH 5
+#define TRACE_MODE 1
 
 #define EYE_DEPTH 3
 

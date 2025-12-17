@@ -1,7 +1,7 @@
 #include "object.h"
 #include <algorithm>
 #include <cmath>
-#include <corecrt_math_defines.h>
+// #include <corecrt_math_defines.h>
 
 bool Sphere::check_intersect(Ray &ray, float &t, float &u, float &v,
     float tMin, float tMax){

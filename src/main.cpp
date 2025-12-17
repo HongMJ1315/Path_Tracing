@@ -8,7 +8,7 @@
 #include <limits>
 #include <cmath>
 #include <algorithm>
-#include <corecrt_math_defines.h>
+// #include <corecrt_math_defines.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/utils/logger.hpp>
 #include <ctime>
@@ -21,9 +21,9 @@
 #include "imgui_impl_opengl3.h"
 
 
-#define RENDER_THREADS 5
+#define RENDER_THREADS 10
 #define GROUPING 1
-#define MAX_ITER 25
+#define MAX_ITER 50
 
 // Window size
 glm::vec3 eye;
@@ -362,9 +362,9 @@ int main(int argc, char **argv){
 
 
     bool is_first = 1;
+    bool stop_write = false;
 
-
-    FILE *gp = _popen("gnuplot -persist", "w");
+    FILE *gp = popen("gnuplot -persist", "w");
     fprintf(gp, "set term wxt\n");
     fprintf(gp, "set grid\n");
     fflush(gp);
@@ -390,8 +390,8 @@ int main(int argc, char **argv){
             ss << "result_E" << EYE_DEPTH
                 << "_L" << LIGHT_DEPTH
                 << "_M" << TRACE_MODE
-                << "_" << render_count 
-                << "_" << std::fixed << std::setprecision(4) << current_rms 
+                << "_" << render_count
+                << "_" << std::fixed << std::setprecision(4) << current_rms
                 << ".png";
 
             std::string file_name = ss.str();
@@ -402,6 +402,26 @@ int main(int argc, char **argv){
             if(!cv::imwrite(file_name, img_bgr_Flip)){
                 std::cerr << "[Error] Failed to save image: " << file_name << std::endl;
             }
+
+
+            // save gnuplot rms
+            std::stringstream plot_file;
+            plot_file << "plot_E" << EYE_DEPTH
+                << "_L" << LIGHT_DEPTH
+                << "_M" << TRACE_MODE
+                << "_" << render_count
+                << "_" << std::fixed << std::setprecision(4) << current_rms
+                << ".png";
+            std::string plot_filename = plot_file.str();
+            fprintf(gp, "set terminal pngcairo size 800, 800 enhanced font 'Arial,12'\n");
+            fprintf(gp, "set output '%s'\n", plot_filename.c_str());
+
+            fprintf(gp, "plot '-' using 1:2 with lines title 'RMS'\n");
+            for(int i = 0; i < (int) rms_history.size(); ++i){
+                fprintf(gp, "%d %f\n", i, rms_history[i]);
+            }
+            fprintf(gp, "e\n");
+            fflush(gp);        // 讓 gnuplot 立即更新
         };
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -550,8 +570,11 @@ int main(int argc, char **argv){
                 std::cout << "Iteration：" << render_conut << " Error：" << rms << std::endl;
                 is_first = 0;
             }
+            else if(!stop_write){
+                save_image(render_conut);
+                stop_write = true;
+            }
             // std::cout << "update" << std::endl;
-            save_image(render_conut);
             pixel_cursor = end;
         }
 
@@ -573,7 +596,7 @@ int main(int argc, char **argv){
 
         glfwSwapBuffers(window);
     }
-
+    pclose(gp);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
