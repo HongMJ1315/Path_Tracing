@@ -244,6 +244,10 @@ glm::vec3 lightray_tracer(Ray light_ray,
 
     // std::cout << throughput << std::endl;
     LightVertex src;
+
+    src.pdf_fwd = 1.0f / (4.0f * M_PI * LIGHT_R * LIGHT_R);
+    src.pdf_rev = 0.0f; // 光源不能被逆向採樣
+
     src.pos = light_ray.point;
     src.normal = light_ray.vec;
     src.wi = -light_ray.vec;
@@ -252,11 +256,30 @@ glm::vec3 lightray_tracer(Ray light_ray,
 
     light_subpath.push_back(src);
 
+    glm::vec3 last_pos = light_ray.point;
+    glm::vec3 last_normal = light_ray.vec; // 光源發射方向
+    float last_pdf_omega = 1.0f / M_PI; // Cosine weighted hemisphere PDF
+
     for(int depth = 0; depth < LIGHT_DEPTH; depth++){
 
         Hit h = first_hit(light_ray, groups);
         if(!h.hit) break;
+
+        float dist2 = glm::dot(h.pos - last_pos, h.pos - last_pos);
+        float dist = std::sqrt(dist2);
         glm::vec3 n = glm::normalize(h.normal);
+
+        // --- [關鍵] 計算幾何因子與 PDF (Area Measure) ---
+        float cos_at_hit = std::abs(glm::dot(n, -light_ray.vec));
+        float cos_at_prev = std::abs(glm::dot(last_normal, light_ray.vec));
+
+        // Forward PDF: 上一點 -> 這一點
+        float pdf_fwd = last_pdf_omega * cos_at_hit / dist2;
+
+        // Reverse PDF: 這一點 -> 上一點 (假設是 Diffuse, Cosine Weighted)
+        // 注意：這是在假設我們從這一點採樣回上一點的機率
+        float pdf_rev_omega = cos_at_hit / M_PI;
+        float pdf_rev = pdf_rev_omega * cos_at_prev / dist2;
 
         float rn = rng_uniform01();
         if(h.obj->mtl.reflect > 0 && rn <= h.obj->mtl.reflect){
@@ -336,12 +359,22 @@ glm::vec3 lightray_tracer(Ray light_ray,
             v.wi = -light_ray.vec;
             v.throughput = throughput;
             v.obj = h.obj;
+
+            v.pdf_fwd = pdf_fwd;
+            v.pdf_rev = pdf_rev; // 暫存，真正準確的 rev 需要下一點的資訊，但在連接時可用
+
             light_subpath.push_back(v);
+
+            // 更新 "上一點" 資訊給下一次迴圈使用
+            last_pos = h.pos;
+            last_normal = n;
+            // 下一次射線採樣的 PDF (Solid Angle)
 
             accumulated += throughput;
 
             glm::vec3 newDir = sample_hemisphere_cosine(n);
             light_ray = Ray(h.pos + newDir * 1e-4f, newDir, 1, RayType::LIGHT);
+            last_pdf_omega = std::abs(glm::dot(n, newDir)) / M_PI;
         }
     }
 

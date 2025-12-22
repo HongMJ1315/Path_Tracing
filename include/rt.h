@@ -20,6 +20,8 @@ struct LightVertex{
     glm::vec3 wi;
     glm::vec3 throughput;
     Object *obj;
+    float pdf_fwd; // 從上一點採樣到這一點的機率密度 (Area Measure)
+    float pdf_rev; // 從這一點反向採樣回上一點的機率密度 (Area Measure)
 };
 
 struct EyeVertex{
@@ -28,6 +30,8 @@ struct EyeVertex{
     glm::vec3 wi;
     glm::vec3 throughput;
     Object *obj;
+    float pdf_fwd; // 從上一點採樣到這一點的機率密度 (Area Measure)
+    float pdf_rev; // 從這一點反向採樣回上一點的機率密度 (Area Measure)
 };
 
 

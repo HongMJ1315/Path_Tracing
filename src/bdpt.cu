@@ -166,6 +166,104 @@ __device__ float3 check_visibility(
 
     return transmission;
 }
+
+// 計算 MIS Weight (Balance Heuristic)
+__device__ float calculate_mis_weight(
+    const CudaEyeVertex *eye_path, int eye_count, int s, // s = eye vertex index (0-based)
+    const CudaLightVertex *light_path, int light_count, int t, // t = light vertex index
+    const float3 &dir_e_to_l, float dist2){
+    // s: Eye path 上的頂點 index (目前連接點)
+    // t: Light path 上的頂點 index (目前連接點)
+    // 連接邊 edge: E[s] <-> L[t]
+
+    // 取得連接點的資料
+    CudaEyeVertex qs = eye_path[s];
+    CudaLightVertex qt = light_path[t];
+
+    float3 ns = normalize(to_f3(qs.normal));
+    float3 nt = normalize(to_f3(qt.normal));
+
+    // 1. 計算連接邊的 PDF (Area Measure)
+    // pdf_camera_to_light: 假如我們從 Eye 端繼續走，採樣到 Light 端點的機率
+    float cos_s = fmaxf(0.0f, dot(ns, dir_e_to_l));
+    float cos_t = fmaxf(0.0f, dot(nt, (dir_e_to_l * -1.0f)));
+
+    // 假設 Diffuse Cosine Weighted
+    float pdf_omega_s = cos_s / 3.14159265359f;
+    float pdf_s_to_t = pdf_omega_s * cos_t / dist2; // convert to area
+
+    float pdf_omega_t = cos_t / 3.14159265359f;
+    float pdf_t_to_s = pdf_omega_t * cos_s / dist2; // convert to area
+
+    // 2. 累加 ratios (Veach's formulation)
+    // sum_ratios = sum( p_i / p_current )
+    float sum_ratios = 0.0f;
+
+    // --- 往 Eye Path 方向回溯 (s -> s-1 -> ... -> 0) ---
+    float ratio = 1.0f;
+    // 初始 ratio: p(連接邊逆向) / p(L端點正向)
+    // 注意：這裡需要小心 qt.pdf_fwd 是否為 0 (例如光源直射)
+    if(qt.pdf_fwd > 1e-6f){
+        ratio = pdf_t_to_s / qt.pdf_fwd;
+    }
+    else{
+        ratio = 0.0f;
+    }
+
+    // 如果是單純 NEE (connect_mode=0)，我們只做這一步的判斷，
+    // 但全 BDPT MIS 需要迴圈
+
+    // 這裡為了簡化，示範 NEE + BSDF 的 2-strategy MIS (最常見需求)
+    // 若要做完整 BDPT MIS，需要寫兩個 while 迴圈遍歷整條路徑
+
+    // Strategy 1: Connection (我們正在做的)
+    // Strategy 2: Hitting (如果光線直接打到物體) -> 權重對應到 qt.pdf_fwd
+
+    // 如果這是一個單純的 NEE (Eye path 長度 s+1, Light path 長度 1)
+    if(t == 0){
+        // NEE MIS weight:
+        // weight = p_connect^2 / (p_connect^2 + p_hit^2) (Power Heuristic)
+        // 或者 Balance Heuristic: 1 / (1 + p_hit / p_connect)
+
+        // p_hit 其實就是我們假想 "如果不連接，而是 Eye path 繼續走一步打到光源" 的機率
+        // 這就是 pdf_s_to_t
+
+        // 這裡的邏輯比較抽象，針對你的程式碼，最簡單的改法：
+        // 我們比較 "Explicit Connection" vs "Implicit Hit"
+
+        // 如果是光源點 (t=0)，且是 NEE
+        // implicit_pdf = pdf_s_to_t (從 Eye 採樣到 Light 的機率)
+        // explicit_pdf = qt.pdf_fwd (光源本身的採樣機率，通常是 1/Area)
+
+        // Balance Heuristic:
+        // w = explicit_pdf / (explicit_pdf + implicit_pdf) ??? 
+        // 不，標準 NEE 是：
+        // p_light = 光源面積採樣機率 (你的 light_ray 生成機率)
+        // p_bsdf  = 視線方向採樣機率 (pdf_s_to_t)
+
+        // 假設 qt.pdf_fwd 存的是光源採樣機率 (1/Area)
+        float p_light = qt.pdf_fwd;
+        float p_bsdf = pdf_s_to_t;
+
+        return (p_light * p_light) / (p_light * p_light + p_bsdf * p_bsdf);
+    }
+
+    // 若是完整 BDPT，請使用下列迴圈結構 (虛擬碼概念，需配合你的 index):
+    // /*
+    float ri = 1.0f;
+    for(int i = s; i >= 0; --i){
+        float p_rev = eye_path[i].pdf_rev;
+        float p_fwd = eye_path[i].pdf_fwd;
+        ri *= (p_rev / p_fwd);
+        if(i > 0) sum_ratios += ri; // 累積
+    }
+    // 同理對 Light path...
+    return 1.0f / (1.0f + sum_ratios);
+    // */
+
+    // return 1.0f; // 預設 1.0 (無 MIS)
+}
+
 // --- Main Kernel ---
 
 __global__ void eye_light_connect_kernel(
@@ -236,7 +334,17 @@ __global__ void eye_light_connect_kernel(
 
             if(transmittance.x > 0.0f || transmittance.y > 0.0f || transmittance.z > 0.0f){
                 float G = (cosE * cosL) / dist2;
-                float3 contrib = ev_tp * fE * G * lv_tp * transmittance;
+
+                float mis_w = 1.0f;
+                if(connect_mode == 1){
+                    mis_w = calculate_mis_weight(
+                        eye_paths_flat + offset, count, i,
+                        light_path, light_cnt, j,
+                        d_vec, dist2
+                    );
+                }
+
+                float3 contrib = ev_tp * fE * G * lv_tp * transmittance * 1.f;
                 total_L = total_L + contrib;
             }
         }

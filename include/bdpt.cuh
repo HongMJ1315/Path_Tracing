@@ -1,7 +1,6 @@
 #pragma once
 #include <cuda_runtime.h>
 
-// 定義與 glm::vec3 記憶體佈局相同的結構
 struct CudaVec3{
     float x, y, z;
 };
@@ -9,7 +8,6 @@ struct CudaVec3{
 struct CudaMaterial{
     CudaVec3 Kd;
     float refract;
-    // Shadow ray 只需要知道是否透明或 Kd 即可
 };
 
 struct CudaSphere{
@@ -25,22 +23,23 @@ struct CudaTriangle{
     int id;
 };
 
-// 用來儲存扁平化的光路徑頂點
 struct CudaLightVertex{
     CudaVec3 pos;
     CudaVec3 normal;
     CudaVec3 throughput;
-    // 我們不存 Object*，改存 Material 屬性，因為連線時只需要知道材質特性
     CudaMaterial mtl;
-    bool is_light_source; // 標記是否為光源本身
+    bool is_light_source; 
+    float pdf_fwd; 
+    float pdf_rev; 
 };
 
-// 用來儲存扁平化的眼路徑頂點
 struct CudaEyeVertex{
     CudaVec3 pos;
     CudaVec3 normal;
     CudaVec3 throughput;
     CudaMaterial mtl;
+    float pdf_fwd; 
+    float pdf_rev; 
 };
 
 struct CudaRay{
@@ -48,8 +47,6 @@ struct CudaRay{
 };
 
 
-// CUDA 函式入口
-// output_buffer: 存放結果顏色 (W * H)
 void cuda_eye_light_connect_wrapper(
     int W, int H,
     const CudaLightVertex *h_light_path, int light_path_size,
