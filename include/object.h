@@ -2,6 +2,7 @@
 #include <glm/glm.hpp>
 #include <vector>
 #include "ray.h"
+#include <corecrt_math_defines.h>
 
 #define ESP 1e-6
 

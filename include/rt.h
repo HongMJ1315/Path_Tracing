@@ -43,7 +43,7 @@ struct EyeRayInfo{
 std::ostream &operator<<(std::ostream &os, const glm::vec3 vec);
 std::istream &operator>>(std::istream &is, glm::vec3 &vec);
 
-std::vector<glm::vec3> run_cuda_eye_light_connect(
+std::vector<glm::vec3> run_cuda_eye_light_connect2(
     int W, int H,
     std::map<int, AABB> &groups
 );
@@ -79,3 +79,10 @@ glm::vec3 path_tracing(Ray ray,
     std::map<int, AABB> &groups,
     std::vector<Light> &lights,
     int depth);
+
+std::vector<glm::vec3> run_cuda_eye_light_connect(
+    int W, int H,
+    std::map<int, AABB> &groups,
+    Camera &cpu_cam,     // [新增] 需要傳入相機資訊
+    glm::vec3 UL, glm::vec3 dx, glm::vec3 dy // [新增] 螢幕參數
+);

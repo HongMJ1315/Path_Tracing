@@ -23,7 +23,7 @@
 
 #define RENDER_THREADS 10
 #define GROUPING 1
-#define MAX_ITER 50
+#define MAX_ITER 250
 
 // Window size
 glm::vec3 eye;
@@ -514,20 +514,18 @@ int main(int argc, char **argv){
             // col = light_debuger(i, j, UL, dx, dy, groups, ori_cam);
             if(render_conut < MAX_ITER){
                 std::cout << "Render Iteration: " << render_conut + 1 << std::endl;
-                start_time = std::chrono::steady_clock::now();
-                gen_eyeray(eyeray, ori_cam, W, H, UL, dx, dy);
+                // start_time = std::chrono::steady_clock::now();
                 render_conut++;
-                init_eyeray(groups, eyeray, W, H);
-                end_time = std::chrono::steady_clock::now();
-                diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-                std::cout << "Generate Eye Ray Elapsed time: " << diff.count() << " ms" << std::endl;
+                // end_time = std::chrono::steady_clock::now();
+                // diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+                // std::cout << "Generate Eye Ray Elapsed time: " << diff.count() << " ms" << std::endl;
                 start_time = std::chrono::steady_clock::now();
                 init_lightray(groups);
                 end_time = std::chrono::steady_clock::now();
                 diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
                 std::cout << "Generate Light Ray Elapsed time: " << diff.count() << " ms" << std::endl;
                 std::vector<glm::vec3> cuda_results;
-                cuda_results = run_cuda_eye_light_connect(W, H, groups);
+                cuda_results = run_cuda_eye_light_connect(W, H, groups, ori_cam, UL, dx, dy);
                 float rms = 0;
                 for(int i = 0; i < W; i++){
                     for(int j = 0; j < H; j++){

@@ -35,10 +35,15 @@ CudaMaterial to_cmtl(const Material &m){
     CudaMaterial cm;
     cm.Kd = to_cv3(m.Kd);
     cm.refract = m.refract;
+    cm.Kg = to_cv3(m.Kg);
+    cm.Ks = to_cv3(m.Ks);
+    cm.glossy = m.glossy;
+    cm.exp = m.exp;
+    cm.reflect = m.reflect;
     return cm;
 }
 
-std::vector<glm::vec3> run_cuda_eye_light_connect(
+std::vector<glm::vec3> run_cuda_eye_light_connect2(
     int W, int H,
     std::map<int, AABB> &groups
 ){
@@ -611,6 +616,85 @@ glm::vec3 eye_light_connect(int i, int j, std::map<int, AABB> &groups){
 
     return L;
 }
+
+std::vector<glm::vec3> run_cuda_eye_light_connect(
+    int W, int H,
+    std::map<int, AABB> &groups,
+    Camera &cpu_cam,     // [新增] 需要傳入相機資訊
+    glm::vec3 UL, glm::vec3 dx, glm::vec3 dy // [新增] 螢幕參數
+){
+    // 1. Prepare Light Path (CPU -> Host Vector -> Cuda Struct)
+    std::vector<CudaLightVertex> h_light_path;
+    h_light_path.reserve(light_subpath.size());
+    for(const auto &lv : light_subpath){
+        CudaLightVertex clv;
+        clv.pos = to_cv3(lv.pos);
+        clv.normal = to_cv3(lv.normal);
+        clv.throughput = to_cv3(lv.throughput);
+        if(lv.obj) clv.mtl = to_cmtl(lv.obj->mtl);
+        else{ clv.mtl.Kd = { 1,1,1 }; clv.mtl.refract = 0; }
+        clv.is_light_source = (lv.obj == nullptr);
+        h_light_path.push_back(clv);
+    }
+
+    // 2. Prepare Scene Objects
+    std::vector<CudaSphere> h_spheres;
+    std::vector<CudaTriangle> h_triangles;
+    for(auto &g : groups){
+        for(Object *obj : g.second.objs){
+            if(Sphere *s = dynamic_cast<Sphere *>(obj)){
+                CudaSphere cs;
+                cs.center = to_cv3(s->center);
+                cs.r = s->r;
+                cs.mtl = to_cmtl(s->mtl);
+                cs.id = s->obj_id;
+                h_spheres.push_back(cs);
+            }
+            else if(Triangle *t = dynamic_cast<Triangle *>(obj)){
+                CudaTriangle ct;
+                ct.v0 = to_cv3(t->vert[0]);
+                ct.v1 = to_cv3(t->vert[1]);
+                ct.v2 = to_cv3(t->vert[2]);
+                ct.mtl = to_cmtl(t->mtl);
+                ct.id = t->obj_id;
+                h_triangles.push_back(ct);
+            }
+        }
+    }
+
+    // 3. Prepare Camera
+    CudaCamera cuda_cam;
+    cuda_cam.eye = to_cv3(cpu_cam.eye);
+    cuda_cam.UL = to_cv3(UL);
+    cuda_cam.dx = to_cv3(dx);
+    cuda_cam.dy = to_cv3(dy);
+
+    // 4. Output Buffer
+    std::vector<CudaVec3> cuda_output(W * H);
+
+    // 5. Call CUDA Pipeline (Trace + Connect)
+    static int sample_idx = 0; sample_idx++; // 簡單的 seed 變化
+    run_cuda_pipeline(
+        W, H,
+        h_light_path.data(), h_light_path.size(),
+        h_spheres.data(), h_spheres.size(),
+        h_triangles.data(), h_triangles.size(),
+        to_cv3(LIGHT_COLOR),
+        cuda_cam,
+        EYE_DEPTH, // 使用定義的最大深度
+        sample_idx,
+        cuda_output.data(),
+        TRACE_MODE
+    );
+
+    // 6. Convert Results
+    std::vector<glm::vec3> result(W * H);
+    for(int k = 0; k < W * H; k++){
+        result[k] = glm::vec3(cuda_output[k].x, cuda_output[k].y, cuda_output[k].z);
+    }
+    return result;
+}
+
 
 glm::vec3 light_debuger(int i, int j, glm::vec3 UL, glm::vec3 dx, glm::vec3 dy, std::map<int, AABB> &groups, Camera ori_cam){
     glm::vec3 col(0);
