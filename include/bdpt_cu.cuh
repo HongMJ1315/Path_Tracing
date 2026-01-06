@@ -35,6 +35,8 @@ struct CudaLightVertex{
     CudaVec3 throughput;
     CudaMaterial mtl;
     bool is_light_source;
+    bool is_parallel;
+    float source_cutoff;
     float pdf_fwd;
     float pdf_rev;
 };

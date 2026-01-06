@@ -206,7 +206,7 @@ __device__ float3 random_in_unit_sphere_device(curandState *state){
 
 
 /*--------------------------
-Light Tracing Kernel (Fixed Logic)
+Light Tracing Kernel
 --------------------------*/
 __global__ void cuda_light_trace(
     const CudaLight *cuda_lights, int num_lights,
@@ -288,6 +288,8 @@ __global__ void cuda_light_trace(
     vertex0.normal = to_CudaVec3(ray_dir);
     vertex0.throughput = to_CudaVec3(throughput);
     vertex0.is_light_source = true;
+    vertex0.source_cutoff = light.cutoff;
+    vertex0.is_parallel = light.is_parallel;
 
     float3 last_normal = ray_dir;
     float3 last_pos = ray_point;
@@ -346,9 +348,13 @@ __global__ void cuda_light_trace(
         float do_glossy = curand_uniform(&localState);
         if(do_glossy < hit.mtl.glossy){
             float3 perfect_reflect = reflect(ray_dir, hit.normal);
-            float roughness = 1.0f / (hit.mtl.exp * 0.05f + .001f);
-            float3 random_dir = random_in_unit_sphere_device(&localState);
-            ray_dir = normalize(perfect_reflect + random_dir * roughness);
+            float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.005f + .001f);
+            float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
+            ray_dir = normalize(perfect_reflect + jitter);
+            if(dot(ray_dir, hit.normal) < 0.0f){
+                ray_dir = ray_dir - hit.normal * dot(ray_dir, hit.normal) * 2.0f;
+                ray_dir = normalize(ray_dir);
+            }
             ray_point = hit.pos + ray_dir * EPSILON;
         }
         else{
@@ -401,7 +407,7 @@ __global__ void cuda_eye_trace_and_connect(
     float pixel_x = (float) px + curand_uniform(&localState);
     float pixel_y = (float) py + curand_uniform(&localState);
 
-    float3 ray_origin = to_f3(cuda_camera.eye);
+    float3 ray_point = to_f3(cuda_camera.eye);
 
     float3 pixel_pos = to_f3(cuda_camera.UL) +
         to_f3(cuda_camera.dx) * pixel_x +
@@ -419,7 +425,7 @@ __global__ void cuda_eye_trace_and_connect(
     for(int depth = 0; depth < max_depth; depth++){
         CudaEyeVertex &vertex = cuda_eye_vertices[path_base_idx + depth];
 
-        CudaHit hit = find_closest_hit(ray_origin, ray_dir, cuda_spheres, num_spheres, cuda_triangles, num_triangles);
+        CudaHit hit = find_closest_hit(ray_point, ray_dir, cuda_spheres, num_spheres, cuda_triangles, num_triangles);
         if(!hit.hit) break;
 
         vertex.pos = to_CudaVec3(hit.pos);
@@ -456,7 +462,12 @@ __global__ void cuda_eye_trace_and_connect(
             float cosL = fmaxf(0.0f, dot(lv_normal, wi * -1.0f));
 
             if(cosE <= 0.0f || cosL <= 0.0f) continue;
-
+            if(lv.is_light_source && lv.source_cutoff > 0.0f && !lv.is_parallel){
+                float3 light_dir = normalize(to_f3(cuda_lights[light_idx % num_lights].dir));
+                float cos_theta = dot(light_dir, wi * -1.0f);
+                float cutoff_cos = cosf(lv.source_cutoff);
+                if(cos_theta < cutoff_cos) continue;
+            }
             float3 transmittance = check_visibility(ev_pos + ev_normal * EPSILON, lv_pos + lv_normal * EPSILON, cuda_spheres, num_spheres, cuda_triangles, num_triangles);
             if(transmittance.x <= 0.0f && transmittance.y <= 0.0f && transmittance.z <= 0.0f) continue;
             float G = (cosE * cosL) / dist2;
@@ -469,7 +480,7 @@ __global__ void cuda_eye_trace_and_connect(
         // Update Ray for next bounce
         float do_reflect = curand_uniform(&localState);
         if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
-            ray_origin = hit.pos + hit.normal * EPSILON;
+            ray_point = hit.pos + hit.normal * EPSILON;
             ray_dir = reflect(ray_dir, hit.normal);
             continue;
         }
@@ -488,12 +499,12 @@ __global__ void cuda_eye_trace_and_connect(
             float eta = n1 / n2;
             refracted_dir = refract(I, N, eta);
             if(length(refracted_dir) > 0.0f){
-                ray_origin = hit.pos - hit.normal * EPSILON;
+                ray_point = hit.pos - hit.normal * EPSILON;
                 ray_dir = refracted_dir;
                 ray_refract = hit.mtl.refract;
             }
             else{
-                ray_origin = hit.pos + hit.normal * EPSILON;
+                ray_point = hit.pos + hit.normal * EPSILON;
                 ray_dir = reflect(ray_dir, hit.normal);
             }
             continue;
@@ -501,15 +512,18 @@ __global__ void cuda_eye_trace_and_connect(
         float do_glossy = curand_uniform(&localState);
         if(do_glossy < hit.mtl.glossy){
             float3 perfect_reflect = reflect(ray_dir, hit.normal);
-            float roughness = 1.0f / (hit.mtl.exp * 0.05f + .001f);
-            float3 random_dir = random_in_unit_sphere_device(&localState);
-            ray_dir = normalize(perfect_reflect + random_dir * roughness);
-            ray_origin = hit.pos + ray_dir * EPSILON;
-            throughput = throughput * to_f3(hit.mtl.Kd); // Diffuse attenuation
+            float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.005f + .001f);
+            float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
+            ray_dir = normalize(perfect_reflect + jitter);
+            if(dot(ray_dir, hit.normal) < 0.0f){
+                ray_dir = ray_dir - hit.normal * dot(ray_dir, hit.normal) * 2.0f;
+                ray_dir = normalize(ray_dir);
+            }
+            ray_point = hit.pos + ray_dir * EPSILON;
         }
         else{
             ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
-            ray_origin = hit.pos + ray_dir * EPSILON;
+            ray_point = hit.pos + ray_dir * EPSILON;
             throughput = throughput * to_f3(hit.mtl.Kd); // Diffuse attenuation
         }
 
@@ -560,6 +574,7 @@ void bdpt_render_wrapper(
     CudaLightVertex *d_cuda_light_vertices;
     cudaError_t err = cudaMalloc(&d_cuda_light_vertices, sizeof(CudaLightVertex) * total_light_vertices_size);
     if(err != cudaSuccess){ printf("Malloc LightVertices failed: %s\n", cudaGetErrorString(err)); return; }
+    cudaMemset(d_cuda_light_vertices, 0, sizeof(CudaLightVertex) * total_light_vertices_size);
 
     // 準備 RNG States
     // 注意：這裡我們分配 "最大需求" 的空間，通常是 W*H (因為像素數量遠大於光源路徑數)
@@ -577,8 +592,7 @@ void bdpt_render_wrapper(
     int light_blocks = (total_light_paths + threads - 1) / threads;
 
     // init rng for Light Trace
-    init_rng << <light_blocks, threads >> > (d_states, time(NULL), total_light_paths);
-    cudaDeviceSynchronize();
+    init_rng << <light_blocks, threads >> > (d_states, time(NULL) + clock(), total_light_paths);    cudaDeviceSynchronize();
 
     cuda_light_trace << <light_blocks, threads >> > (
         d_lights, num_lights,

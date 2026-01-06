@@ -249,35 +249,34 @@ int main(int argc, char **argv){
 
     std::vector<CudaLight> light(3);
     light[1].dir.x = 1.0f;
-    light[1].dir.y = 0.0f;
+    light[1].dir.y = -3.f;
     light[1].dir.z = 0.0f;
     light[1].pos.x = -0.49f;
     light[1].pos.y = .0f;
-    light[1].pos.z = 0.0f;
+    light[1].pos.z = 0.1f;
     light[1].illum.x = 0.0f;
     light[1].illum.y = 1.0f;
     light[1].illum.z = 1.0f;
-    light[1].cutoff = glm::radians(10.0f);
+    light[1].cutoff = glm::radians(50.0f);
     light[2].dir.x = -1.0f;
     light[2].dir.y = -1.0f;
     light[2].dir.z = 0.0f;
     light[2].pos.x = 0.49f;
     light[2].pos.y = .49f;
-    light[2].pos.z = 0.0f;
+    light[2].pos.z = 0.3f;
     light[2].illum.x = 1.0f;
     light[2].illum.y = 1.0f;
     light[2].illum.z = 0.0f;
-    light[2].cutoff = glm::radians(50.0f);
-    light[0].is_parallel = false;
-    light[0].dir.x = 0.0f;
+    light[2].cutoff = glm::radians(30.0f);
+    light[0].dir.x = 0.5f;
     light[0].dir.y = -1.0f;
-    light[0].dir.z = 1.0f;
-    light[0].illum.x = 20.0f;
-    light[0].illum.y = 0.0f;
-    light[0].illum.z = 20.0f;
+    light[0].dir.z = -1.0f;
+    light[0].illum.x = 40.0f;
+    light[0].illum.y = 20.0f;
+    light[0].illum.z = 40.0f;
     light[0].is_parallel = true;
 
-    move_data_to_cuda(groups, light, 100);
+    move_data_to_cuda(groups, light, 400);
 
     auto end_time = std::chrono::steady_clock::now();
     auto start_time = std::chrono::steady_clock::now();
