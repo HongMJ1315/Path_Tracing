@@ -4,6 +4,7 @@
 #include "ray.h"
 
 #define ESP 1e-6
+#define PI 3.14159265358979323846f
 
 // 前置宣告
 

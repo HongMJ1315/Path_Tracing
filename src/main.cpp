@@ -1,6 +1,6 @@
 #include "GLinclude.h"
 #include "glsl.h"
-#include "rt.h"
+#include "bdpt_cu_helper.h"
 #include "texture.h"
 #include <iostream>
 #include <fstream>
@@ -23,7 +23,9 @@
 
 #define RENDER_THREADS 10
 #define GROUPING 1
-#define MAX_ITER 250
+#define MAX_ITER 999999999
+#define LIGHT_DEPTH 4
+#define EYE_DEPTH 4
 
 // Window size
 glm::vec3 eye;
@@ -31,82 +33,22 @@ std::pair<int, int> resolution;
 int render_array[600 * 600] = {};
 
 
-//run type = 0 Use FOV, type = 1 Use f_mm 
-void get_camera(int W, int H, float f_mm, Camera &camera,
-    glm::vec3 &UL, glm::vec3 &dx, glm::vec3 &dy, bool run_type,
-    float sensor_w = 36.0f, float sensor_h = 24.0f){
-    auto deg2rad = [](float d){ return d * float(M_PI) / 180.0f; };
-    auto rad2deg = [](float r){ return r * 180.0f / float(M_PI); };
-    float vfov = deg2rad(camera.fov);
-    if(run_type){
+void init_camera(Camera camera, float F,
+    int W, int H,
+    glm::vec3 &UL, glm::vec3 &dx, glm::vec3 &dy){
+    float aspect = float(W) / float(H);
+    float theta = F * PI / 180.0f;
+    float half_height = tan(theta / 2);
+    float half_width = aspect * half_height;
 
-        vfov = 2.0f * std::atan(sensor_h / (2.0f * f_mm));
-        camera.fov = rad2deg(vfov);
-    }
-    const float fov_rad = vfov;
-    const float aspect = float(W) / float(H);
+    glm::vec3 w = glm::normalize(camera.eye - camera.look_at);
+    glm::vec3 u = glm::normalize(glm::cross(camera.view_up, w));
+    glm::vec3 v = glm::cross(w, u);
 
-    const glm::vec3 cam_eye = camera.eye;
-    glm::vec3 f = glm::normalize(camera.look_at - camera.eye);
-    glm::vec3 up = glm::normalize(camera.view_up);
-    glm::vec3 r = glm::normalize(glm::cross(f, up));
-    glm::vec3 u = glm::cross(r, f);
-
-    const float dist = 1.0f;
-    const glm::vec3 C = cam_eye + dist * f;
-    const float half_h = std::tan(0.5f * fov_rad);
-    const float half_w = half_h * aspect;
-
-    UL = C + u * half_h - r * half_w;
-    glm::vec3 UR = C + u * half_h + r * half_w;
-    glm::vec3 LL = C - u * half_h - r * half_w;
-
-    dx = (UR - UL) / float(W);
-    dy = (LL - UL) / float(H);
+    UL = camera.eye - half_width * u + half_height * v - w;
+    dx = (2 * half_width * u) / float(W);
+    dy = (-2 * half_height * v) / float(H);
 }
-
-inline glm::vec2 concentric_sample_disk(float u1, float u2){
-    // [0,1)^2 -> [-1,1]^2
-    float sx = 2.0f * u1 - 1.0f;
-    float sy = 2.0f * u2 - 1.0f;
-
-    if(sx == 0 && sy == 0) return { 0,0 };
-
-    float r, theta;
-    if(std::abs(sx) > std::abs(sy)){
-        r = sx;
-        theta = (float) M_PI / 4.0f * (sy / sx);
-    }
-    else{
-        r = sy;
-        theta = (float) M_PI / 2.0f - (float) M_PI / 4.0f * (sx / sy);
-    }
-    return { r * std::cos(theta), r * std::sin(theta) };
-}
-
-void gen_eyeray(std::vector<EyeRayInfo> &eyeray, Camera ori_cam,
-    const int W, const int H, glm::vec3 UL, glm::vec3 dx, glm::vec3 dy){
-    eyeray.clear();
-    for(int p = 0; p < W * H; p++){
-        int j = render_array[p] / W;              // row
-        int i = render_array[p] % W;              // col
-        for(int s = 0; s < SAMPLE; s++){
-            // std::cout << ori_cam.fov << std::endl;
-            float jx = rng_uniform01() - 0.5f;
-            float jy = rng_uniform01() - 0.5f;
-            glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f + jx) + dy * (float(j) + 0.5f + jy);
-
-            glm::vec3 ray_dir = glm::normalize(pixel_pos - ori_cam.eye);
-            Ray ray(ori_cam.eye, ray_dir, 1, RayType::EYE);
-            EyeRayInfo info;
-            info.i = i, info.j = j;
-            info.ray = ray;
-            info.sample = s;
-            eyeray.push_back(info);
-        }
-    }
-}
-
 
 std::map<int, AABB> groups;
 int main(int argc, char **argv){
@@ -270,30 +212,8 @@ int main(int argc, char **argv){
     std::cout << "  FOV: " << camera.fov << std::endl;
     std::cout << "Ball:" << std::endl;
     std::cout << ball_cnt << std::endl;
-
-    // for(auto b : balls){
-    //     std::cout << "  Location: " << b.center << std::endl;
-    //     std::cout << "  R: " << b.r << std::endl;
-    // }
     std::cout << "Trainagle:" << std::endl;
     std::cout << tri_cnt << std::endl;
-
-    // std::cout << "Bounding location: " << std::endl;
-    // for(auto i : groups){
-    //     std::cout << i.second.min << std::endl;
-    //     std::cout << i.second.max << std::endl;
-    //     std::cout << i.second.objs.size() << std::endl;
-    //     std::cout << std::endl;
-    // }
-    // for(auto t : triangles){
-    //     std::cout << "  Vertex: (" << std::endl;
-    //     for(int i = 0; i < 3; i++){
-    //         std::cout << "    vertex " << i << ": " << t.vert[i] << std::endl;
-    //     }
-    //     std::cout << "  )" << std::endl;
-    // }
-
-
 
 
     std::vector<const Object *> scene;
@@ -314,47 +234,50 @@ int main(int argc, char **argv){
 
     bool is_writed = false;
 
-    bool is_depth = false;
-    bool last_is_depth = is_depth;
-
-    for(int i = 0; i < W * H; i++){
-        render_array[i] = i;
-    }
 
     Camera ori_cam = camera;
 
-    float F = 50, A = 32;
-    float last_F = F, last_A = A;
+    float F = 50;
     glm::vec3 UL, dx, dy;
     const glm::vec3 cam_eye = camera.eye;
-    get_camera(W, H, F, camera, UL, dx, dy, is_depth);
+    init_camera(camera, F, W, H, UL, dx, dy);
+    CudaCamera cam = {};
+    cam.eye = { cam_eye.x, cam_eye.y, cam_eye.z };
+    cam.UL = { UL.x, UL.y, UL.z };
+    cam.dx = { dx.x, dx.y, dx.z };
+    cam.dy = { dy.x, dy.y, dy.z };
 
-    glm::vec3 camF = glm::normalize(camera.look_at - camera.eye);
-    glm::vec3 camR = glm::normalize(glm::cross(camF, glm::normalize(camera.view_up)));
-    glm::vec3 camU = glm::cross(camR, camF);
+    std::vector<CudaLight> light(3);
+    light[1].dir.x = 1.0f;
+    light[1].dir.y = 0.0f;
+    light[1].dir.z = 0.0f;
+    light[1].pos.x = -0.49f;
+    light[1].pos.y = .0f;
+    light[1].pos.z = 0.0f;
+    light[1].illum.x = 0.0f;
+    light[1].illum.y = 1.0f;
+    light[1].illum.z = 1.0f;
+    light[1].cutoff = glm::radians(10.0f);
+    light[2].dir.x = -1.0f;
+    light[2].dir.y = -1.0f;
+    light[2].dir.z = 0.0f;
+    light[2].pos.x = 0.49f;
+    light[2].pos.y = .49f;
+    light[2].pos.z = 0.0f;
+    light[2].illum.x = 1.0f;
+    light[2].illum.y = 1.0f;
+    light[2].illum.z = 0.0f;
+    light[2].cutoff = glm::radians(50.0f);
+    light[0].is_parallel = false;
+    light[0].dir.x = 0.0f;
+    light[0].dir.y = -1.0f;
+    light[0].dir.z = 1.0f;
+    light[0].illum.x = 20.0f;
+    light[0].illum.y = 0.0f;
+    light[0].illum.z = 20.0f;
+    light[0].is_parallel = true;
 
-    float focus_dist = glm::length(camera.look_at - camera.eye);
-    float last_fd = focus_dist;
-
-    float lens_mm = F / A * 0.5f;    // mm;
-
-    std::random_device rd;
-    unsigned int seed = rd();
-    std::mt19937 mt_rand = std::mt19937(seed);
-    std::shuffle(render_array, render_array + W * H, mt_rand);
-
-
-    std::vector<EyeRayInfo> eyeray;
-    resize_screen_info(W, H);
-    // gen_eyeray(eyeray, ori_cam, W, H, UL, dx, dy);
-
-    // init_eyeray(groups, eyeray, W, H);
-    // init_lightray(groups);
-    // init_light_group();
-
-    int progress = 0;
-    int total_pixel = resolution.first * resolution.second;
-    int percent = total_pixel / 100;
+    move_data_to_cuda(groups, light, 100);
 
     auto end_time = std::chrono::steady_clock::now();
     auto start_time = std::chrono::steady_clock::now();
@@ -364,19 +287,21 @@ int main(int argc, char **argv){
     bool is_first = 1;
     bool stop_write = false;
 
-    FILE *gp = popen("gnuplot -persist", "w");
+    FILE *gp = _popen("gnuplot -persist", "w");
     fprintf(gp, "set term wxt\n");
     fprintf(gp, "set grid\n");
     fflush(gp);
     std::vector<float> rms_history;
+    std::vector<CudaVec3> cuda_results(W * H);
     while(!glfwWindowShouldClose(window)){
+        /*--------------------------
+        Image Save Function
+        --------------------------*/
         auto save_image = [&](int render_count){
-
             if(framebuffer.empty()){
                 std::cerr << "[Error] Framebuffer is empty!" << std::endl;
                 return;
             }
-
             cv::Mat img_rgb(H, W, CV_8UC3, (void *) framebuffer.data());
 
             cv::Mat img_bgr, img_bgr_Flip;
@@ -389,7 +314,6 @@ int main(int argc, char **argv){
             std::stringstream ss;
             ss << "result_E" << EYE_DEPTH
                 << "_L" << LIGHT_DEPTH
-                << "_M" << TRACE_MODE
                 << "_" << render_count
                 << "_" << std::fixed << std::setprecision(4) << current_rms
                 << ".png";
@@ -397,18 +321,13 @@ int main(int argc, char **argv){
             std::string file_name = ss.str();
             std::cout << "[Save] " << file_name << std::endl;
 
-            // 6. 寫入檔案
-            // 使用 std::vector 的 compression_params 可以控制壓縮率 (選用)
             if(!cv::imwrite(file_name, img_bgr_Flip)){
                 std::cerr << "[Error] Failed to save image: " << file_name << std::endl;
             }
 
-
-            // save gnuplot rms
             std::stringstream plot_file;
             plot_file << "plot_E" << EYE_DEPTH
                 << "_L" << LIGHT_DEPTH
-                << "_M" << TRACE_MODE
                 << "_" << render_count
                 << "_" << std::fixed << std::setprecision(4) << current_rms
                 << ".png";
@@ -421,8 +340,12 @@ int main(int argc, char **argv){
                 fprintf(gp, "%d %f\n", i, rms_history[i]);
             }
             fprintf(gp, "e\n");
-            fflush(gp);        // 讓 gnuplot 立即更新
+            fflush(gp);
         };
+
+        /*--------------------------
+        GUI
+        --------------------------*/
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -430,151 +353,78 @@ int main(int argc, char **argv){
         glfwPollEvents();
 
         ImGui::Begin("F and F/");
-        // ImGui::SliderFloat("F", &F, 14.f, 200.0f);
-        // ImGui::SliderFloat("F/", &A, 1.4f, 32.f);
-        // ImGui::SliderFloat("Focus Dist", &focus_dist, 0.1f, 10.0f); // 可視需求調整範圍
-        // ImGui::Checkbox("Depth Field", &is_depth);
         if(ImGui::Button("Save Image")){
             save_image(render_conut);
         }
 
         ImGui::End();
-        // /*
-        if(is_depth && (last_A != A || last_F != F || last_fd != focus_dist)){
-            pixel_cursor = 0;
-            is_writed = 0;
-            last_A = A; last_F = F; last_fd = focus_dist;
-            std::fill(framebuffer.begin(), framebuffer.end(), 0);
-
-            get_camera(W, H, F, camera, UL, dx, dy, 1);
-
-            start_time = std::chrono::steady_clock::now();
-        }
-        else if(is_depth != last_is_depth){
-            pixel_cursor = 0;
-            is_writed = 0;
-            std::fill(framebuffer.begin(), framebuffer.end(), 0);
-
-            last_is_depth = is_depth;
-            get_camera(W, H, F, ori_cam, UL, dx, dy, 0);
-            start_time = std::chrono::steady_clock::now();
-        }
-
-
-        int end = std::min(W * H, pixel_cursor + k_pixels_per_frame);
 
         glm::vec3 col(0.0f);
-        if(is_depth){
-#pragma omp parallel for schedule(dynamic, 128)
-            for(int p = pixel_cursor; p < end; ++p){
-                int j = render_array[p] / W;              // row
-                int i = render_array[p] % W;              // col
 
 
-                float lens_radius = (F / A) * 0.5f * 0.1f;
-                // std::cout << lens_radius << std::endl;
-                for(int k = 0; k < SAMPLE; k++){
-                    float jx = rng_uniform01() - 0.5f;
-                    float jy = rng_uniform01() - 0.5f;
+        /*--------------------------
+        Ray Tracing Render Loop
+        --------------------------*/
+        if(render_conut < MAX_ITER){
+            std::cout << "Render Iteration: " << render_conut + 1 << std::endl;
+            render_conut++;
 
-                    glm::vec3 pixel_pos = UL + dx * (float(i) + 0.5f + jx) + dy * (float(j) + 0.5f + jy);
+            std::cout << "Generate Eye Ray Elapsed time: " << diff.count() << " ms" << std::endl;
+            start_time = std::chrono::steady_clock::now();
+            end_time = std::chrono::steady_clock::now();
+            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "Generate Light Ray Elapsed time: " << diff.count() << " ms" << std::endl;
+            cuda_results.resize(W * H);
+            start_time = std::chrono::steady_clock::now();
+            run_cuda_bdpt(cam, cuda_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H);
+            float rms = 0;
+            for(int i = 0; i < W; i++){
+                for(int j = 0; j < H; j++){
+                    CudaVec3 cu_col = cuda_results[j * W + i];
+                    glm::vec3 col = glm::vec3(cu_col.x, cu_col.y, cu_col.z);
 
-                    glm::vec3 pin_dir = glm::normalize(pixel_pos - camera.eye);
+                    col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
+                    col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
 
-                    float t_focus = focus_dist / glm::dot(pin_dir, camF);
-                    glm::vec3 focus_point = camera.eye + pin_dir * t_focus;
+                    int idx = (size_t(H - 1 - j) * W + i) * 3;
+                    acc_buffer[idx + 0] += col.r;
+                    acc_buffer[idx + 1] += col.g;
+                    acc_buffer[idx + 2] += col.b;
 
-                    glm::vec2 disk = concentric_sample_disk(rng_uniform01(), rng_uniform01());
-                    glm::vec3 lens_offset = (disk.x * camR + disk.y * camU) * lens_radius;
-
-                    glm::vec3 ray_origin = camera.eye + lens_offset;
-                    glm::vec3 ray_dir = glm::normalize(focus_point - ray_origin);
-
-                    Ray ray(ray_origin, ray_dir, 0, RayType::EYE);
-
-                    col += path_tracing(ray, groups, lights, 0);
-                    col = col / SAMPLE;
-                }
-                col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
-                col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
-
-                size_t idx = (size_t(H - 1 - j) * W + i) * 3;
-                framebuffer[idx + 0] = (unsigned char) (col.r * 255.0f);
-                framebuffer[idx + 1] = (unsigned char) (col.g * 255.0f);
-                framebuffer[idx + 2] = (unsigned char) (col.b * 255.0f);
-            }
-
-            // std::cout << col << std::endl;
-            // if(p % percent == 0){
-            //     std::cout << "Render " << progress++ << "%" << std::endl;
-            // }
-        }
-        else{
-            // col = eye_light_connect(i, j, groups);
-            // col = light_debuger(i, j, UL, dx, dy, groups, ori_cam);
-            if(render_conut < MAX_ITER){
-                std::cout << "Render Iteration: " << render_conut + 1 << std::endl;
-                // start_time = std::chrono::steady_clock::now();
-                render_conut++;
-                // end_time = std::chrono::steady_clock::now();
-                // diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-                // std::cout << "Generate Eye Ray Elapsed time: " << diff.count() << " ms" << std::endl;
-                start_time = std::chrono::steady_clock::now();
-                init_lightray(groups);
-                end_time = std::chrono::steady_clock::now();
-                diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-                std::cout << "Generate Light Ray Elapsed time: " << diff.count() << " ms" << std::endl;
-                std::vector<glm::vec3> cuda_results;
-                cuda_results = run_cuda_eye_light_connect(W, H, groups, ori_cam, UL, dx, dy);
-                float rms = 0;
-                for(int i = 0; i < W; i++){
-                    for(int j = 0; j < H; j++){
-                        glm::vec3 col = cuda_results[j * W + i];
-
-                        col = glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
-                        col = glm::pow(col, glm::vec3(1.0f / 2.2f)); // gamma
-
-                        int idx = (size_t(H - 1 - j) * W + i) * 3;
-                        acc_buffer[idx + 0] += col.r;
-                        acc_buffer[idx + 1] += col.g;
-                        acc_buffer[idx + 2] += col.b;
-
-                        framebuffer[idx + 0] = (unsigned char) ((acc_buffer[idx + 0] / (float) render_conut) * 255.f);
-                        framebuffer[idx + 1] = (unsigned char) ((acc_buffer[idx + 1] / (float) render_conut) * 255.f);
-                        framebuffer[idx + 2] = (unsigned char) ((acc_buffer[idx + 2] / (float) render_conut) * 255.f);
-                        if(!is_first){
-                            for(int k = 0; k < 3; k++){
-                                rms += (framebuffer[idx + k] - last_frame[idx + k]) * (framebuffer[idx + k] - last_frame[idx + k]);
-                            }
+                    framebuffer[idx + 0] = (unsigned char) ((acc_buffer[idx + 0] / (float) render_conut) * 255.f);
+                    framebuffer[idx + 1] = (unsigned char) ((acc_buffer[idx + 1] / (float) render_conut) * 255.f);
+                    framebuffer[idx + 2] = (unsigned char) ((acc_buffer[idx + 2] / (float) render_conut) * 255.f);
+                    if(!is_first){
+                        for(int k = 0; k < 3; k++){
+                            rms += (framebuffer[idx + k] - last_frame[idx + k]) * (framebuffer[idx + k] - last_frame[idx + k]);
                         }
-                        last_frame[idx + 0] = framebuffer[idx + 0];
-                        last_frame[idx + 1] = framebuffer[idx + 1];
-                        last_frame[idx + 2] = framebuffer[idx + 2];
-
                     }
+                    last_frame[idx + 0] = framebuffer[idx + 0];
+                    last_frame[idx + 1] = framebuffer[idx + 1];
+                    last_frame[idx + 2] = framebuffer[idx + 2];
+
                 }
-                rms = std::sqrt(rms) / 255.f;
-                rms_history.push_back(rms);
-                // std::cout << rms << std::endl;
-                fprintf(gp, "plot '-' using 1:2 with lines title 'RMS'\n");
-                for(int i = 0; i < (int) rms_history.size(); ++i){
-                    fprintf(gp, "%d %f\n", i, rms_history[i]);
-                }
-                fprintf(gp, "e\n");
-                fflush(gp);        // 讓 gnuplot 立即更新
-                end_time = std::chrono::steady_clock::now();
-                diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-                std::cout << "Render Elapsed time: " << diff.count() << " ms" << std::endl;
-                std::cout << "Iteration：" << render_conut << " Error：" << rms << std::endl;
-                is_first = 0;
             }
-            else if(!stop_write){
-                save_image(render_conut);
-                stop_write = true;
+            rms = std::sqrt(rms) / 255.f;
+            rms_history.push_back(rms);
+            // std::cout << rms << std::endl;
+            fprintf(gp, "plot '-' using 1:2 with lines title 'RMS'\n");
+            for(int i = 0; i < (int) rms_history.size(); ++i){
+                fprintf(gp, "%d %f\n", i, rms_history[i]);
             }
-            // std::cout << "update" << std::endl;
-            pixel_cursor = end;
+            fprintf(gp, "e\n");
+            fflush(gp);        // 讓 gnuplot 立即更新
+            end_time = std::chrono::steady_clock::now();
+            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "Render Elapsed time: " << diff.count() << " ms" << std::endl;
+            std::cout << "Iteration：" << render_conut << " Error：" << rms << std::endl;
+            is_first = 0;
         }
+        else if(!stop_write){
+            save_image(render_conut);
+            stop_write = true;
+        }
+        // std::cout << "update" << std::endl;
 
         // */
         glBindTexture(GL_TEXTURE_2D, tex);
@@ -594,7 +444,7 @@ int main(int argc, char **argv){
 
         glfwSwapBuffers(window);
     }
-    pclose(gp);
+    _pclose(gp);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

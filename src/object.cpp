@@ -39,9 +39,9 @@ bool Sphere::check_intersect(Ray &ray, float &t, float &u, float &v,
     ));
 
     float theta = std::atan2(n_local.z, n_local.x); // [-pi, pi]
-    if(theta < 0) theta += 2.0f * float(M_PI);
-    u = theta / (2.0f * float(M_PI));  // [0,1)
-    v = std::acos(glm::clamp(n_local.y, -1.0f, 1.0f)) / float(M_PI); // [0,1]
+    if(theta < 0) theta += 2.0f * float(PI);
+    u = theta / (2.0f * float(PI));  // [0,1)
+    v = std::acos(glm::clamp(n_local.y, -1.0f, 1.0f)) / float(PI); // [0,1]
     return true;
 }
 
