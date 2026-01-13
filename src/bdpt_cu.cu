@@ -1,209 +1,13 @@
 #include "bdpt_cu.cuh"
-#include <curand_kernel.h>
 #include <cstdio>
-#define EPSILON 1e-4f
-#define PI 3.14159265358979323846f
 #define BLOCK_SIZE 256
 
-/*--------------------------
-Vector Math Functions
---------------------------*/
-__device__ inline float3 operator+(const float3 &a, const float3 &b){ return make_float3(a.x + b.x, a.y + b.y, a.z + b.z); }
-__device__ inline float3 operator-(const float3 &a, const float3 &b){ return make_float3(a.x - b.x, a.y - b.y, a.z - b.z); }
-__device__ inline float3 operator*(const float3 &a, float b){ return make_float3(a.x * b, a.y * b, a.z * b); }
-__device__ inline float3 operator*(const float3 &a, const float3 &b){ return make_float3(a.x * b.x, a.y * b.y, a.z * b.z); }
-__device__ inline float3 operator/(const float3 &a, float b){ return make_float3(a.x / b, a.y / b, a.z / b); }
-__device__ inline float dot(const float3 &a, const float3 &b){ return a.x * b.x + a.y * b.y + a.z * b.z; }
-__device__ inline float3 cross(const float3 &a, const float3 &b){ return make_float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
-__device__ inline float length(const float3 &a){ return sqrtf(dot(a, a)); }
-__device__ inline float3 normalize(const float3 &a){ return a / length(a); }
-__device__ inline float3 reflect(const float3 &I, const float3 &N){ return I - N * 2.0f * dot(N, I); }
-__device__ inline void swap(float &a, float &b){ float temp = a; a = b; b = temp; }
-__device__ inline float3 refract(const float3 &I, const float3 &N, float eta){
-    float dotNI = dot(N, I);
-    float k = 1.0f - eta * eta * (1.0f - dotNI * dotNI);
-
-    if(k < 0.0f){
-        return make_float3(0.0f, 0.0f, 0.0f);
-    }
-
-    return I * eta - N * (eta * dotNI + sqrtf(k));
-}
-__device__ inline float3 to_f3(const CudaVec3 &v){ return make_float3(v.x, v.y, v.z); }
-__device__ inline CudaVec3 to_CudaVec3(const float3 &v){ CudaVec3 cv; cv.x = v.x; cv.y = v.y; cv.z = v.z; return cv; }
-__device__ inline float3 pow_f3(const float3 &base, float exp){
-    return make_float3(powf(base.x, exp), powf(base.y, exp), powf(base.z, exp));
-}
-
-/*--------------------------
-RNG Functions
---------------------------*/
-__global__ void init_rng(curandState *states, unsigned long long seed, int total_elements){
+__global__ void bdpt_init_rng(curandState *states, unsigned long long seed, int total_elements){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx < total_elements){
         curand_init(seed, idx, 0, &states[idx]);
     }
 }
-
-/*--------------------------
-Intersection Functions
---------------------------*/
-__device__ bool intersect_sphere(const float3 &ro, const float3 &rd, const CudaSphere &s, float &t, float max_dist){
-    float3 oc = ro - to_f3(s.center);
-    float b = dot(oc, rd);
-    float c = dot(oc, oc) - s.r * s.r;
-    float h = b * b - c;
-    if(h < 0.0f) return false;
-    h = sqrtf(h);
-    float t_hit = -b - h;
-
-    if(t_hit > EPSILON && t_hit < max_dist){
-        t = t_hit;
-        return true;
-    }
-    t_hit = -b + h;
-    if(t_hit > EPSILON && t_hit < max_dist){
-        t = t_hit;
-        return true;
-    }
-    return false;
-}
-
-__device__ bool intersect_triangle(const float3 &ro, const float3 &rd, const CudaTriangle &tri, float &t, float max_dist){
-    float3 v0 = to_f3(tri.v0);
-    float3 v1 = to_f3(tri.v1);
-    float3 v2 = to_f3(tri.v2);
-
-    float3 e1 = v1 - v0;
-    float3 e2 = v2 - v0;
-    float3 h = cross(rd, e2);
-    float a = dot(e1, h);
-
-    if(a > -1e-6f && a < 1e-6f) return false;
-
-    float f = 1.0f / a;
-    float3 s = ro - v0;
-    float u = f * dot(s, h);
-
-    if(u < 0.0f || u > 1.0f) return false;
-
-    float3 q = cross(s, e1);
-    float v = f * dot(rd, q);
-
-    if(v < 0.0f || u + v > 1.0f) return false;
-
-    float t_hit = f * dot(e2, q);
-
-    if(t_hit > EPSILON && t_hit < max_dist){
-        t = t_hit;
-        return true;
-    }
-    return false;
-}
-
-__device__ float3 check_visibility(
-    float3 p1, float3 p2,
-    const CudaSphere *spheres, int sphere_cnt,
-    const CudaTriangle *triangles, int tri_cnt
-){
-    float3 diff = p2 - p1;
-    float dist = length(diff);
-    float3 dir = diff / dist;
-
-    float3 transmission = make_float3(1.0f, 1.0f, 1.0f);
-    float max_d = dist - 1e-3f;
-    float min_d = 1e-3f;
-    float t;
-
-    for(int i = 0; i < tri_cnt; ++i){
-        if(intersect_triangle(p1, dir, triangles[i], t, max_d)){
-            if(t > min_d){
-                if(triangles[i].mtl.refract <= 0.0f) return make_float3(0.0f, 0.0f, 0.0f);
-                transmission = transmission * to_f3(triangles[i].mtl.Ks);
-            }
-        }
-    }
-
-    for(int i = 0; i < sphere_cnt; ++i){
-        if(intersect_sphere(p1, dir, spheres[i], t, max_d)){
-            if(t > min_d){
-                if(spheres[i].mtl.refract <= 0.0f) return make_float3(0.0f, 0.0f, 0.0f);
-                // Simple attenuation for glass
-                transmission = transmission * to_f3(spheres[i].mtl.Ks);
-            }
-        }
-    }
-    return transmission;
-}
-
-__device__ CudaHit find_closest_hit(
-    float3 ray_point, float3 ray_dir,
-    const CudaSphere *spheres, int sphere_cnt,
-    const CudaTriangle *triangles, int tri_cnt
-){
-    CudaHit best;
-    best.hit = false;
-    best.t = 1e20f;
-
-    float t;
-    float max_dist = 1e20f;
-
-    for(int i = 0; i < sphere_cnt; ++i){
-        if(intersect_sphere(ray_point, ray_dir, spheres[i], t, max_dist)){
-            if(t < best.t){
-                best.hit = true;
-                best.t = t;
-                best.mtl = spheres[i].mtl;
-                best.pos = ray_point + ray_dir * t;
-                best.normal = normalize(best.pos - to_f3(spheres[i].center));
-                if(dot(best.normal, ray_dir) > 0.0f) best.normal = best.normal * -1.0f;
-            }
-        }
-    }
-
-    for(int i = 0; i < tri_cnt; ++i){
-        if(intersect_triangle(ray_point, ray_dir, triangles[i], t, max_dist)){
-            if(t < best.t){
-                best.hit = true;
-                best.t = t;
-                best.mtl = triangles[i].mtl;
-                best.pos = ray_point + ray_dir * t;
-                float3 v0 = to_f3(triangles[i].v0);
-                float3 v1 = to_f3(triangles[i].v1);
-                float3 v2 = to_f3(triangles[i].v2);
-                best.normal = normalize(cross(v1 - v0, v2 - v0));
-                if(dot(best.normal, ray_dir) > 0.0f) best.normal = best.normal * -1.0f;
-            }
-        }
-    }
-    return best;
-}
-
-__device__ float3 sample_hemisphere_cosine_device(float3 N, curandState *state){
-    float3 T, B;
-    if(fabs(N.z) < 0.999f) T = normalize(cross(make_float3(0, 0, 1), N));
-    else T = normalize(cross(make_float3(0, 1, 0), N));
-    B = cross(N, T);
-    float u1 = curand_uniform(state);
-    float u2 = curand_uniform(state);
-    float r = sqrtf(u1);
-    float phi = 2.0f * PI * u2;
-    float x = r * cosf(phi);
-    float y = r * sinf(phi);
-    float z = sqrtf(fmaxf(0.0f, 1.0f - u1));
-    return normalize(T * x + B * y + N * z);
-}
-
-__device__ float3 random_in_unit_sphere_device(curandState *state){
-    float3 p;
-    do{
-        p = make_float3(curand_uniform(state) * 2.0f - 1.0f,
-            curand_uniform(state) * 2.0f - 1.0f,
-            curand_uniform(state) * 2.0f - 1.0f);
-    } while(dot(p, p) >= 1.0f);
-    return p;
-}
-
 
 /*--------------------------
 Light Tracing Kernel
@@ -348,7 +152,7 @@ __global__ void cuda_light_trace(
         float do_glossy = curand_uniform(&localState);
         if(do_glossy < hit.mtl.glossy){
             float3 perfect_reflect = reflect(ray_dir, hit.normal);
-            float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.005f + .001f);
+            float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.0005f + .001f);
             float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
             ray_dir = normalize(perfect_reflect + jitter);
             if(dot(ray_dir, hit.normal) < 0.0f){
@@ -512,7 +316,7 @@ __global__ void cuda_eye_trace_and_connect(
         float do_glossy = curand_uniform(&localState);
         if(do_glossy < hit.mtl.glossy){
             float3 perfect_reflect = reflect(ray_dir, hit.normal);
-            float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.005f + .001f);
+            float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.0005f + .001f);
             float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
             ray_dir = normalize(perfect_reflect + jitter);
             if(dot(ray_dir, hit.normal) < 0.0f){
@@ -592,7 +396,7 @@ void bdpt_render_wrapper(
     int light_blocks = (total_light_paths + threads - 1) / threads;
 
     // init rng for Light Trace
-    init_rng << <light_blocks, threads >> > (d_states, time(NULL) + clock(), total_light_paths);    cudaDeviceSynchronize();
+    bdpt_init_rng << <light_blocks, threads >> > (d_states, time(NULL) + clock(), total_light_paths);    cudaDeviceSynchronize();
 
     cuda_light_trace << <light_blocks, threads >> > (
         d_lights, num_lights,
@@ -624,7 +428,7 @@ void bdpt_render_wrapper(
     int eye_blocks = (total_pixels + threads - 1) / threads;
 
     // Re-seed for Eye Trace (using total_pixels)
-    init_rng << <eye_blocks, threads >> > (d_states, time(NULL) + 9999, total_pixels);
+    bdpt_init_rng << <eye_blocks, threads >> > (d_states, time(NULL) + 9999, total_pixels);
     cudaDeviceSynchronize();
 
     printf("Eye Trace Launch: Pixels=%d, Blocks=%d\n", total_pixels, eye_blocks);

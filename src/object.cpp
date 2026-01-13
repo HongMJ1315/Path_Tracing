@@ -3,6 +3,16 @@
 #include <cmath>
 // #include <corecrt_math_defines.h>
 
+std::ostream &operator<<(std::ostream &os, const glm::vec3 vec){
+    os << "(" << vec.x << ", " << vec.y << ", " << vec.z << ")";
+    return os;
+}
+
+std::istream &operator>>(std::istream &is, glm::vec3 &vec){
+    is >> vec.x >> vec.y >> vec.z;
+    return is;
+}
+
 bool Sphere::check_intersect(Ray &ray, float &t, float &u, float &v,
     float tMin, float tMax){
     glm::vec3 D = glm::normalize(ray.vec);

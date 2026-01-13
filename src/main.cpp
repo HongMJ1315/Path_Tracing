@@ -1,5 +1,6 @@
 #include "GLinclude.h"
 #include "glsl.h"
+#include "ppm_cu_helper.h"
 #include "bdpt_cu_helper.h"
 #include "texture.h"
 #include <iostream>
@@ -20,6 +21,10 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
+#ifdef WINDOWS
+#define popen _popen
+#define pclose _pclose
+#endif
 
 #define RENDER_THREADS 10
 #define GROUPING 1
@@ -247,7 +252,7 @@ int main(int argc, char **argv){
     cam.dx = { dx.x, dx.y, dx.z };
     cam.dy = { dy.x, dy.y, dy.z };
 
-    std::vector<CudaLight> light(3);
+    std::vector<CudaLight> light(4);
     light[1].dir.x = 1.0f;
     light[1].dir.y = -3.f;
     light[1].dir.z = 0.0f;
@@ -268,15 +273,25 @@ int main(int argc, char **argv){
     light[2].illum.y = 1.0f;
     light[2].illum.z = 0.0f;
     light[2].cutoff = glm::radians(30.0f);
+    light[3].dir.x = 0.0f;
+    light[3].dir.y = -1.0f;
+    light[3].dir.z = 0.0f;
+    light[3].pos.x = -0.49f;
+    light[3].pos.y = .49f;
+    light[3].pos.z = 0.0f;
+    light[3].illum.x = 1.0f;
+    light[3].illum.y = 0.0f;
+    light[3].illum.z = 1.0f;
+    light[3].cutoff = glm::radians(30.0f);
     light[0].dir.x = 0.5f;
     light[0].dir.y = -1.0f;
-    light[0].dir.z = -1.0f;
-    light[0].illum.x = 40.0f;
-    light[0].illum.y = 20.0f;
-    light[0].illum.z = 40.0f;
+    light[0].dir.z = 1.0f;
+    light[0].illum.x = 5.0f;
+    light[0].illum.y = 5.0f;
+    light[0].illum.z = 5.0f;
     light[0].is_parallel = true;
 
-    move_data_to_cuda(groups, light, 400);
+    move_data_to_cuda_bdpt(groups, light, 100);
 
     auto end_time = std::chrono::steady_clock::now();
     auto start_time = std::chrono::steady_clock::now();
@@ -286,7 +301,7 @@ int main(int argc, char **argv){
     bool is_first = 1;
     bool stop_write = false;
 
-    FILE *gp = _popen("gnuplot -persist", "w");
+    FILE *gp = popen("gnuplot -persist", "w");
     fprintf(gp, "set term wxt\n");
     fprintf(gp, "set grid\n");
     fflush(gp);
@@ -443,7 +458,7 @@ int main(int argc, char **argv){
 
         glfwSwapBuffers(window);
     }
-    _pclose(gp);
+    pclose(gp);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

@@ -10,6 +10,26 @@ project("Hw1"
 )
 
 add_executable(${MY_EXECUTABLE})
+
+if(WIN32)
+    # Windows 系統
+    message(STATUS "Detected System: Windows")
+    target_compile_definitions(${MY_EXECUTABLE} PRIVATE WINDOWS)
+
+elseif(APPLE)
+    # macOS 系統
+    message(STATUS "Detected System: macOS")
+    target_compile_definitions(${MY_EXECUTABLE} PRIVATE MACOS)
+
+elseif(UNIX AND NOT APPLE)
+    # Linux 系統 (注意：CMake 中 macOS 也被視為 UNIX，所以要排除 APPLE)
+    message(STATUS "Detected System: Linux")
+    target_compile_definitions(${MY_EXECUTABLE} PRIVATE LINUX)
+
+else()
+    message(WARNING "Unknown System")
+endif()
+
 set_target_properties(${MY_EXECUTABLE}
     PROPERTIES
     CUDA_STANDARD 17

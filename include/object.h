@@ -1,10 +1,14 @@
 #include <limits>
 #include <glm/glm.hpp>
 #include <vector>
+#include <iostream>
 #include "ray.h"
 
 #define ESP 1e-6
 #define PI 3.14159265358979323846f
+
+std::ostream &operator<<(std::ostream &os, const glm::vec3 vec);
+std::istream &operator>>(std::istream &is, glm::vec3 &vec);
 
 // 前置宣告
 
