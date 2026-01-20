@@ -9,7 +9,7 @@ GLuint prog = 0;
 void gen_texture(int w, int h){
     // --- 放在 main() 開頭初始化完成後、進入渲染前 ---
 // 解析度
-    const int W = w;
+    const int W = w * 2;
     const int H = h;
 
     // 建立一張 RGB texture 當畫布
