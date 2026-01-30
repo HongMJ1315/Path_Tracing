@@ -49,12 +49,13 @@ void move_data_to_cuda_bdpt(std::map<int, AABB> groups, std::vector<CudaLight> &
         }
     }
 
-    for(auto &l : lights){
+    for(auto l : lights){
         l.dir = normalize_cuda(l.dir);
         l.illum.x /= (float) light_sample;
         l.illum.y /= (float) light_sample;
         l.illum.z /= (float) light_sample;
         bdpt_ns::cuda_lights.push_back(l);
+        std::cout << "Light Dir: " << l.dir.x << ", " << l.dir.y << ", " << l.dir.z << std::endl;
     }
 
     bdpt_ns::light_sample = light_sample;

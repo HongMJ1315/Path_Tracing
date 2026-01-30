@@ -19,7 +19,11 @@ void move_data_to_cuda_ppm(std::map<int, AABB> groups, std::vector<CudaLight> &l
             const Sphere *sph = dynamic_cast<const Sphere *>(obj);
             const Triangle *tri = dynamic_cast<const Triangle *>(obj);
             if(sph){
-                CudaSphere csph; csph.center = to_cv3(sph->center); csph.r = sph->r; csph.mtl = to_cmtl(sph->mtl); csph.id = sph->obj_id;
+                CudaSphere csph;
+                csph.center = to_cv3(sph->center);
+                csph.r = sph->r;
+                csph.mtl = to_cmtl(sph->mtl);
+                csph.id = sph->obj_id;
                 ppm_ns::cuda_spheres.push_back(csph);
                 ppm_ns::scene_max_bound.x = std::max(ppm_ns::scene_max_bound.x, sph->center.x + sph->r);
                 ppm_ns::scene_max_bound.y = std::max(ppm_ns::scene_max_bound.y, sph->center.y + sph->r);
@@ -29,7 +33,12 @@ void move_data_to_cuda_ppm(std::map<int, AABB> groups, std::vector<CudaLight> &l
                 ppm_ns::scene_min_bound.z = std::min(ppm_ns::scene_min_bound.z, sph->center.z - sph->r);
             }
             else if(tri){
-                CudaTriangle ctri; ctri.v0 = to_cv3(tri->vert[0]); ctri.v1 = to_cv3(tri->vert[1]); ctri.v2 = to_cv3(tri->vert[2]); ctri.mtl = to_cmtl(tri->mtl); ctri.id = tri->obj_id;
+                CudaTriangle ctri;
+                ctri.v0 = to_cv3(tri->vert[0]);
+                ctri.v1 = to_cv3(tri->vert[1]);
+                ctri.v2 = to_cv3(tri->vert[2]);
+                ctri.mtl = to_cmtl(tri->mtl);
+                ctri.id = tri->obj_id;
                 ppm_ns::cuda_triangles.push_back(ctri);
                 ppm_ns::scene_max_bound.x = std::max({ ppm_ns::scene_max_bound.x, tri->vert[0].x, tri->vert[1].x, tri->vert[2].x });
                 ppm_ns::scene_max_bound.y = std::max({ ppm_ns::scene_max_bound.y, tri->vert[0].y, tri->vert[1].y, tri->vert[2].y });

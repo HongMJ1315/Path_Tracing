@@ -104,6 +104,7 @@ __global__ void ppm_eye_trace(
         if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
             ray_point = hit.pos + hit.normal * EPSILON;
             ray_dir = reflect(ray_dir, hit.normal);
+            depth--;
             continue;
         }
         if(hit.mtl.refract > 0.0f){
@@ -129,6 +130,7 @@ __global__ void ppm_eye_trace(
                 ray_point = hit.pos + hit.normal * EPSILON;
                 ray_dir = reflect(ray_dir, hit.normal);
             }
+            depth--;
             continue;
         }
         float do_glossy = curand_uniform(&localState);
@@ -177,6 +179,7 @@ __global__ void ppm_photon_trace(
     int light_idx = idx % num_lights;
     CudaLight light = lights[light_idx];
     float3 ray_point, ray_dir;
+    float ray_refract = 1.0f;
 
     if(light.is_parallel){
         ray_dir = normalize(to_f3(light.dir));
@@ -231,7 +234,6 @@ __global__ void ppm_photon_trace(
 
     float3 photon_flux = to_f3(light.illum) * (float) num_lights;
 
-    float ray_refract = 1.0f;
 
     for(int depth = 0; depth < max_depth; depth++){
         CudaHit hit = find_closest_hit(ray_point, ray_dir, spheres, num_spheres, triangles, num_triangles);
@@ -241,6 +243,7 @@ __global__ void ppm_photon_trace(
         if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
             ray_point = hit.pos + hit.normal * EPSILON;
             ray_dir = reflect(ray_dir, hit.normal);
+            depth--;
             continue;
         }
         if(hit.mtl.refract > 0.0f){
@@ -266,6 +269,7 @@ __global__ void ppm_photon_trace(
                 ray_point = hit.pos + hit.normal * EPSILON;
                 ray_dir = reflect(ray_dir, hit.normal);
             }
+            depth--;
             continue;
         }
 
@@ -282,26 +286,27 @@ __global__ void ppm_photon_trace(
             ray_point = hit.pos + ray_dir * EPSILON;
         }
         else{
-            if(hit.mtl.reflect <= 0.0f && hit.mtl.refract <= 0.0f && hit.mtl.glossy <= 0.0f){
 
-                int3 center_grid = make_int3(
-                    (int) floorf((hit.pos.x - min_bound.x) / cell_size),
-                    (int) floorf((hit.pos.y - min_bound.y) / cell_size),
-                    (int) floorf((hit.pos.z - min_bound.z) / cell_size)
-                );
+            int3 center_grid = make_int3(
+                (int) floorf((hit.pos.x - min_bound.x) / cell_size),
+                (int) floorf((hit.pos.y - min_bound.y) / cell_size),
+                (int) floorf((hit.pos.z - min_bound.z) / cell_size)
+            );
 
-                for(int z = -1; z <= 1; z++){
-                    for(int y = -1; y <= 1; y++){
-                        for(int x = -1; x <= 1; x++){
-                            int neighbor_gx = center_grid.x + x;
-                            int neighbor_gy = center_grid.y + y;
-                            int neighbor_gz = center_grid.z + z;
+            for(int z = -1; z <= 1; z++){
+                for(int y = -1; y <= 1; y++){
+                    for(int x = -1; x <= 1; x++){
+                        int neighbor_gx = center_grid.x + x;
+                        int neighbor_gy = center_grid.y + y;
+                        int neighbor_gz = center_grid.z + z;
 
-                            int h_idx = hash_grid_indices(neighbor_gx, neighbor_gy, neighbor_gz);
+                        int h_idx = hash_grid_indices(neighbor_gx, neighbor_gy, neighbor_gz);
 
-                            int hp_idx = hash_head[h_idx];
-                            while(hp_idx != -1){
-                                CudaHitPoint &hp = hit_points[hp_idx];
+                        int hp_idx = hash_head[h_idx];
+                        while(hp_idx != -1){
+                            CudaHitPoint &hp = hit_points[hp_idx];
+
+                            if(dot(to_f3(hp.normal), hit.normal) > 0.9f){
                                 float3 hp_pos = to_f3(hp.pos);
                                 float3 diff = hp_pos - hit.pos;
                                 float dist2 = dot(diff, diff);
@@ -313,20 +318,17 @@ __global__ void ppm_photon_trace(
                                     atomicAddVec3(&hp.accum_flux, energy);
                                     atomicAdd(&hp.photon_count, 1.0f);
                                 }
-                                hp_idx = hash_next[hp_idx];
                             }
+                            hp_idx = hash_next[hp_idx];
                         }
                     }
                 }
-
-                // --- SCATTER (Russian Roulette) ---
-                float prob = fmaxf(hit.mtl.Kd.x, fmaxf(hit.mtl.Kd.y, hit.mtl.Kd.z));
-                if(curand_uniform(&localState) > prob) break;
-
-                photon_flux = photon_flux * to_f3(hit.mtl.Kd) / prob;
-                ray_point = hit.pos + hit.normal * EPSILON;
-                ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
             }
+
+
+            ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
+            photon_flux = photon_flux * to_f3(hit.mtl.Kd);
+            ray_point = hit.pos + ray_dir * EPSILON;
         }
     }
     states[idx] = localState;
@@ -390,7 +392,6 @@ void ppm_render_wrapper(
     cudaMalloc(&d_image, sizeof(CudaVec3) * W * H);
 
     curandState *d_states;
-    light_sample = 500000;
     int max_threads = W * H > light_sample ? W * H : light_sample;
     cudaMalloc(&d_states, sizeof(curandState) * max_threads);
     ppm_init_rng << <(max_threads + 255) / 256, 256 >> > (d_states, time(NULL) + 1234, max_threads);

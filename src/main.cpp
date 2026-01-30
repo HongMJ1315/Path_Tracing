@@ -72,7 +72,7 @@ int main(int argc, char **argv){
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    GLFWwindow *window = glfwCreateWindow(1600, 800, "Ray Tracing", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(1800, 800, "Ray Tracing", nullptr, nullptr);
     if(!window){
         std::cerr << "Failed to create window\n";
         glfwTerminate();
@@ -191,7 +191,7 @@ int main(int argc, char **argv){
     const int W = resolution.first;   // width
     const int H = resolution.second;  // height
 
-    glViewport(0, 0, 1200, 600);
+    glViewport(0, 0, 1800, 600);
     glDisable(GL_DEPTH_TEST);
 
     gen_texture(resolution.first, resolution.second);
@@ -227,9 +227,9 @@ int main(int argc, char **argv){
     for(const auto &t : triangles)  scene.push_back(&t);
 
     std::vector<float>  ppm_buffer(H * W * 3, 0), bdpt_buffer(H * W * 3, 0);
-    std::vector<unsigned char> framebuffer(W *H * 3 * 2, 0),
-        last_ppm(W *H * 3, 0), last_bdpt(W *H * 3, 0),
-        current_ppm(W *H * 3, 0), current_bdpt(W *H * 3, 0);
+    std::vector<unsigned char> framebuffer(W * H * 3 * 3, 0),
+        last_ppm(W * H * 3, 0), last_bdpt(W * H * 3, 0),
+        current_ppm(W * H * 3, 0), current_bdpt(W * H * 3, 0);
     int render_conut = 0;
 
     int pixel_cursor = 0;
@@ -285,7 +285,7 @@ int main(int argc, char **argv){
     light[3].illum.y = 0.0f;
     light[3].illum.z = 1.0f;
     light[3].cutoff = glm::radians(30.0f);
-    light[0].dir.x = 0.5f;
+    light[0].dir.x = 0.0f;
     light[0].dir.y = -1.0f;
     light[0].dir.z = 1.0f;
     light[0].illum.x = 10.0f;
@@ -293,7 +293,7 @@ int main(int argc, char **argv){
     light[0].illum.z = 10.0f;
     light[0].is_parallel = true;
 
-    move_data_to_cuda_ppm(groups, light, 100);
+    move_data_to_cuda_ppm(groups, light, 1000000);
     move_data_to_cuda_bdpt(groups, light, 100);
 
     auto end_time = std::chrono::steady_clock::now();
@@ -304,15 +304,14 @@ int main(int argc, char **argv){
     bool is_first = 1;
     bool stop_write = false;
 
-    FILE *ppm_gp = popen("gnuplot -persist", "w");
-    fprintf(ppm_gp, "set term wxt\n");
-    fprintf(ppm_gp, "set grid\n");
-    fflush(ppm_gp);
-
-    FILE *bdpt_gp = popen("gnuplot -persist", "w");
-    fprintf(bdpt_gp, "set term wxt\n"); 
-    fprintf(bdpt_gp, "set grid\n");
-    fflush(bdpt_gp);
+    FILE *rms_gp = popen("gnuplot -persist", "w");
+    if(rms_gp){
+        fprintf(rms_gp, "set term wxt title 'RMS Convergence Comparison'\n");
+        fprintf(rms_gp, "set grid\n");
+        fprintf(rms_gp, "set xlabel 'Iteration'\n");
+        fprintf(rms_gp, "set ylabel 'RMS Error'\n");
+        fflush(rms_gp);
+    }
 
     std::vector<float> ppm_rms_history, bdpt_rms_history;
     std::vector<CudaVec3> ppm_results(W * H);
@@ -350,21 +349,28 @@ int main(int argc, char **argv){
             }
 
             std::stringstream plot_file;
-            plot_file << "plot_E" << EYE_DEPTH
-                << "_L" << LIGHT_DEPTH
-                << "_" << render_count
-                << "_" << std::fixed << std::setprecision(4) << current_rms
-                << ".png";
+            plot_file << "plot_Combined_E" << EYE_DEPTH << "_L" << LIGHT_DEPTH << "_" << render_count << ".png";
             std::string plot_filename = plot_file.str();
-            fprintf(ppm_gp, "set terminal pngcairo size 800, 800 enhanced font 'Arial,12'\n");
-            fprintf(ppm_gp, "set output '%s'\n", plot_filename.c_str());
 
-            fprintf(ppm_gp, "plot '-' using 1:2 with lines title 'RMS'\n");
+            fprintf(rms_gp, "set terminal pngcairo size 800, 600 enhanced font 'Arial,12'\n");
+            fprintf(rms_gp, "set output '%s'\n", plot_filename.c_str());
+
+            fprintf(rms_gp, "plot '-' using 1:2 with lines title 'PPM RMS', '-' using 1:2 with lines title 'BDPT RMS'\n");
+
             for(int i = 0; i < (int) ppm_rms_history.size(); ++i){
-                fprintf(ppm_gp, "%d %f\n", i, ppm_rms_history[i]);
+                fprintf(rms_gp, "%d %f\n", i, ppm_rms_history[i]);
             }
-            fprintf(ppm_gp, "e\n");
-            fflush(ppm_gp);
+            fprintf(rms_gp, "e\n");
+
+            for(int i = 0; i < (int) bdpt_rms_history.size(); ++i){
+                fprintf(rms_gp, "%d %f\n", i, bdpt_rms_history[i]);
+            }
+            fprintf(rms_gp, "e\n");
+
+            fflush(rms_gp);
+
+            fprintf(rms_gp, "unset output\n");
+            fprintf(rms_gp, "set terminal wxt\n");
         };
 
         /*--------------------------
@@ -403,8 +409,8 @@ int main(int argc, char **argv){
             start_time = std::chrono::steady_clock::now();
             run_cuda_ppm(cam, ppm_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H);
             run_cuda_bdpt(cam, bdpt_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H);
-            float ppm_rms = 0,bdpt_rms=0;
-            int total_width = W * 2;
+            float ppm_rms = 0, bdpt_rms = 0;
+            int total_width = W * 3;
 
             for(int i = 0; i < W; i++){
                 for(int j = 0; j < H; j++){
@@ -412,19 +418,20 @@ int main(int argc, char **argv){
                     glm::vec3 ppm_col = glm::vec3(ppm_cu_col.x, ppm_cu_col.y, ppm_cu_col.z);
                     ppm_col = glm::clamp(ppm_col, glm::vec3(0.0f), glm::vec3(1.0f));
                     ppm_col = glm::pow(ppm_col, glm::vec3(1.0f / 2.2f));
-                    float ppm[3] = {ppm_col.x, ppm_col.y, ppm_col.z};
+                    float ppm[3] = { ppm_col.x, ppm_col.y, ppm_col.z };
 
                     CudaVec3 bdpt_cu_col = bdpt_results[j * W + i];
                     glm::vec3 bdpt_col = glm::vec3(bdpt_cu_col.x, bdpt_cu_col.y, bdpt_cu_col.z);
                     bdpt_col = glm::clamp(bdpt_col, glm::vec3(0.0f), glm::vec3(1.0f));
                     bdpt_col = glm::pow(bdpt_col, glm::vec3(1.0f / 2.2f));
-                    float bdpt[3] = {bdpt_col.x, bdpt_col.y, bdpt_col.z};
+                    float bdpt[3] = { bdpt_col.x, bdpt_col.y, bdpt_col.z };
 
                     int row_flipped = H - 1 - j; // Y軸翻轉
                     int image_idx = (size_t(row_flipped) * W + i) * 3;
 
                     int ppm_frame_idx = (size_t(row_flipped) * total_width + i) * 3;
                     int bdpt_frame_idx = (size_t(row_flipped) * total_width + (i + W)) * 3;
+                    int combined_frame_idx = (size_t(row_flipped) * total_width + (i + W * 2)) * 3;
 
                     ppm_buffer[image_idx + 0] += ppm_col.r;
                     ppm_buffer[image_idx + 1] += ppm_col.g;
@@ -450,6 +457,10 @@ int main(int argc, char **argv){
                     framebuffer[bdpt_frame_idx + 1] = current_bdpt[image_idx + 1];
                     framebuffer[bdpt_frame_idx + 2] = current_bdpt[image_idx + 2];
 
+                    framebuffer[combined_frame_idx + 0] = (unsigned char) ((int) (current_ppm[image_idx + 0] + (int) current_bdpt[image_idx + 0]) / 2.f);
+                    framebuffer[combined_frame_idx + 1] = (unsigned char) ((int) (current_ppm[image_idx + 1] + (int) current_bdpt[image_idx + 1]) / 2.f);
+                    framebuffer[combined_frame_idx + 2] = (unsigned char) ((int) (current_ppm[image_idx + 2] + (int) current_bdpt[image_idx + 2]) / 2.f);
+
                     if(!is_first){
                         for(int k = 0; k < 3; k++){
 
@@ -465,26 +476,26 @@ int main(int argc, char **argv){
                     last_bdpt[image_idx + 2] = current_bdpt[image_idx + 2];
                 }
             }
-            ppm_rms = std::sqrt(ppm_rms)/(W * H * 255.0f);
+            ppm_rms = std::sqrt(ppm_rms) / (W * H * 255.0f);
             ppm_rms_history.push_back(ppm_rms);
 
-            bdpt_rms = std::sqrt(bdpt_rms)/(W * H * 255.0f);
+            bdpt_rms = std::sqrt(bdpt_rms) / (W * H * 255.0f);
             bdpt_rms_history.push_back(bdpt_rms);
+            fprintf(rms_gp, "plot '-' using 1:2 with lines lw 1.5 title 'PPM RMS', '-' using 1:2 with lines lw 1.5 title 'BDPT RMS'\n");
 
-            fprintf(ppm_gp, "plot '-' using 1:2 with lines title 'PPM RMS'\n");
+            // 第一組：PPM
             for(int i = 0; i < (int) ppm_rms_history.size(); ++i){
-                fprintf(ppm_gp, "%d %f\n", i, ppm_rms_history[i]);
+                fprintf(rms_gp, "%d %f\n", i, ppm_rms_history[i]);
             }
-            fprintf(ppm_gp, "e\n");
-            fflush(ppm_gp);        // 讓 gnuplot 立即更新
+            fprintf(rms_gp, "e\n");
 
-            fprintf(bdpt_gp, "plot '-' using 1:2 with lines title 'BDPT RMS'\n");
+            // 第二組：BDPT
             for(int i = 0; i < (int) bdpt_rms_history.size(); ++i){
-                fprintf(bdpt_gp, "%d %f\n", i, bdpt_rms_history[i]);
+                fprintf(rms_gp, "%d %f\n", i, bdpt_rms_history[i]);
             }
-            fprintf(bdpt_gp, "e\n");
-            fflush(bdpt_gp);        // 讓 gnuplot 立即更新
+            fprintf(rms_gp, "e\n");
 
+            fflush(rms_gp);
 
             end_time = std::chrono::steady_clock::now();
             diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
@@ -500,7 +511,7 @@ int main(int argc, char **argv){
 
         // */
         glBindTexture(GL_TEXTURE_2D, tex);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W * 2, H, GL_RGB, GL_UNSIGNED_BYTE, framebuffer.data());
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W * 3, H, GL_RGB, GL_UNSIGNED_BYTE, framebuffer.data());
 
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -516,7 +527,7 @@ int main(int argc, char **argv){
 
         glfwSwapBuffers(window);
     }
-    pclose(ppm_gp);
+    pclose(rms_gp);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

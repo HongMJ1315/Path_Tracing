@@ -122,6 +122,7 @@ __global__ void cuda_light_trace(
         if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
             ray_point = hit.pos + hit.normal * EPSILON;
             ray_dir = reflect(ray_dir, hit.normal);
+            depth--;
             continue;
         }
         if(hit.mtl.refract > 0.0f){
@@ -147,6 +148,7 @@ __global__ void cuda_light_trace(
                 ray_point = hit.pos + hit.normal * EPSILON;
                 ray_dir = reflect(ray_dir, hit.normal);
             }
+            depth--;
             continue;
         }
         float do_glossy = curand_uniform(&localState);
@@ -196,7 +198,7 @@ __global__ void cuda_eye_trace_and_connect(
     CudaEyeVertex *cuda_eye_vertices,
     curandState *states,
     int W, int H,
-    int max_depth, CudaVec3 *cuda_image
+    int max_depth, int light_path_depth, CudaVec3 *cuda_image
 ){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= W * H) return;
@@ -246,6 +248,22 @@ __global__ void cuda_eye_trace_and_connect(
             float3 lv_pos = to_f3(lv.pos);
             float3 lv_normal = to_f3(lv.normal);
             float3 lv_throughput = to_f3(lv.throughput);
+            if(lv.is_light_source){
+                float scene_radius = 0.075f;
+                float3 w = lv_normal;
+                float3 u, v;
+                if(fabs(w.x) > 0.9f) u = make_float3(0.0f, 1.0f, 0.0f);
+                else u = make_float3(1.0f, 0.0f, 0.0f);
+                v = normalize(cross(w, u));
+                u = normalize(cross(v, w));
+                float r1 = curand_uniform(&localState);
+                float r2 = curand_uniform(&localState);
+                float plane_size = scene_radius * 2.0f;
+                float offset_u = (r1 - 0.5f) * plane_size;
+                float offset_v = (r2 - 0.5f) * plane_size;
+                lv_pos = lv_pos + u * offset_u + v * offset_v;
+            }
+
 
             CudaEyeVertex &ev = vertex;
             float3 ev_pos = to_f3(ev.pos);
@@ -267,13 +285,17 @@ __global__ void cuda_eye_trace_and_connect(
 
             if(cosE <= 0.0f || cosL <= 0.0f) continue;
             if(lv.is_light_source && lv.source_cutoff > 0.0f && !lv.is_parallel){
-                float3 light_dir = normalize(to_f3(cuda_lights[light_idx % num_lights].dir));
+                // spot light cutoff test
+                int path_idx = light_idx / light_path_depth;
+                int real_light_idx = path_idx % num_lights;
+
+                float3 light_dir = normalize(to_f3(cuda_lights[real_light_idx].dir));
                 float cos_theta = dot(light_dir, wi * -1.0f);
                 float cutoff_cos = cosf(lv.source_cutoff);
                 if(cos_theta < cutoff_cos) continue;
             }
             float3 transmittance = check_visibility(ev_pos + ev_normal * EPSILON, lv_pos + lv_normal * EPSILON, cuda_spheres, num_spheres, cuda_triangles, num_triangles);
-            if(transmittance.x <= 0.0f && transmittance.y <= 0.0f && transmittance.z <= 0.0f) continue;
+            if(transmittance.x <= 0.0f && transmittance.y <= 0.0f && transmittance.z <= 0.0f) transmittance = make_float3(0.0f, 0.0f, 0.0f);
             float G = (cosE * cosL) / dist2;
 
             float3 contrib = ev_throughput * fE * G * lv_throughput * transmittance;
@@ -286,6 +308,7 @@ __global__ void cuda_eye_trace_and_connect(
         if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
             ray_point = hit.pos + hit.normal * EPSILON;
             ray_dir = reflect(ray_dir, hit.normal);
+            depth--;
             continue;
         }
         if(hit.mtl.refract > 0.0f){
@@ -311,6 +334,7 @@ __global__ void cuda_eye_trace_and_connect(
                 ray_point = hit.pos + hit.normal * EPSILON;
                 ray_dir = reflect(ray_dir, hit.normal);
             }
+            depth--;
             continue;
         }
         float do_glossy = curand_uniform(&localState);
@@ -396,7 +420,8 @@ void bdpt_render_wrapper(
     int light_blocks = (total_light_paths + threads - 1) / threads;
 
     // init rng for Light Trace
-    bdpt_init_rng << <light_blocks, threads >> > (d_states, time(NULL) + clock(), total_light_paths);    cudaDeviceSynchronize();
+    bdpt_init_rng << <light_blocks, threads >> > (d_states, time(NULL) + clock(), total_light_paths);
+    cudaDeviceSynchronize();
 
     cuda_light_trace << <light_blocks, threads >> > (
         d_lights, num_lights,
@@ -438,10 +463,11 @@ void bdpt_render_wrapper(
         d_spheres, num_spheres,
         d_triangles, num_triangles,
         scene_min, scene_max, cuda_camera,
-        d_cuda_light_vertices, total_light_vertices_size, // 注意：這裡你傳入的是 Buffer 大小，你的 Kernel 迴圈會跑這麼多次
+        d_cuda_light_vertices, total_light_vertices_size,
         d_cuda_eye_vertices, d_states,
         W, H,
         eye_depth,
+        light_depth,
         d_image
         );
     cudaDeviceSynchronize();
