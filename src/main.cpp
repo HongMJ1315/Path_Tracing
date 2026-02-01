@@ -321,31 +321,57 @@ int main(int argc, char **argv){
         Image Save Function
         --------------------------*/
         auto save_image = [&](int render_count){
+            auto img_process = [](std::vector<uchar> &results, int W, int H){
+                cv::Mat img_rgb(H, W, CV_8UC3, (void *) results.data());
+                cv::Mat img_bgr, img_bgr_Flip;
+                cv::cvtColor(img_rgb, img_bgr, cv::COLOR_RGB2BGR);
+
+                cv::flip(img_bgr, img_bgr_Flip, 0);
+
+                return img_bgr_Flip;
+            };
             if(framebuffer.empty()){
                 std::cerr << "[Error] Framebuffer is empty!" << std::endl;
                 return;
             }
-            cv::Mat img_rgb(H, W, CV_8UC3, (void *) framebuffer.data());
 
-            cv::Mat img_bgr, img_bgr_Flip;
+            std::vector<uchar> combined(W * H * 3, 0);
+            for(int i = 0; i < W * H; ++i){
+                combined[i * 3 + 0] = std::min(((int)current_ppm[i * 3 + 0] + (int)current_bdpt[i * 3 + 0]) / 2, 255);
+                combined[i * 3 + 1] = std::min(((int)current_ppm[i * 3 + 1] + (int)current_bdpt[i * 3 + 1]) / 2, 255);
+                combined[i * 3 + 2] = std::min(((int)current_ppm[i * 3 + 2] + (int)current_bdpt[i * 3 + 2]) / 2, 255);
+            }
 
-            cv::cvtColor(img_rgb, img_bgr, cv::COLOR_RGB2BGR);
-            cv::flip(img_bgr, img_bgr_Flip, 0);
-
-            float current_rms = ppm_rms_history.empty() ? 0.0f : ppm_rms_history.back();
-
+            cv::Mat bdpt_img = img_process(current_bdpt, W, H);
+            cv::Mat ppm_img = img_process(current_ppm, W, H);
+            cv::Mat img_bgr_Flip = img_process(combined, W, H);
             std::stringstream ss;
-            ss << "result_E" << EYE_DEPTH
+            ss << "E" << EYE_DEPTH
                 << "_L" << LIGHT_DEPTH
                 << "_" << render_count
-                << "_" << std::fixed << std::setprecision(4) << current_rms
-                << ".png";
+                << "_" << std::fixed << std::setprecision(4);
+            std::stringstream ppm_ss;
+            ppm_ss << "ppm_" << ss.str() << ppm_rms_history.back() << ".png";
+            std::string ppm_file_name = ppm_ss.str();
+            std::cout << "[Save] " << ppm_file_name << std::endl;
 
-            std::string file_name = ss.str();
-            std::cout << "[Save] " << file_name << std::endl;
+            if(!cv::imwrite(ppm_file_name, ppm_img)){
+                std::cerr << "[Error] Failed to save image: " << ppm_file_name << std::endl;
+            }
 
-            if(!cv::imwrite(file_name, img_bgr_Flip)){
-                std::cerr << "[Error] Failed to save image: " << file_name << std::endl;
+            std::stringstream bdpt_ss;
+            bdpt_ss << "bdpt_" << ss.str() << bdpt_rms_history.back() << ".png";
+            std::string bdpt_file_name = bdpt_ss.str();
+            std::cout << "[Save] " << bdpt_file_name << std::endl;
+            if(!cv::imwrite(bdpt_file_name, bdpt_img)){
+                std::cerr << "[Error] Failed to save image: " << bdpt_file_name << std::endl;
+            }
+            std::stringstream combined_ss;
+            combined_ss << "combined_" << ss.str() << ".png";
+            std::string combined_file_name = combined_ss.str();
+            std::cout << "[Save] " << combined_file_name << std::endl;
+            if(!cv::imwrite(combined_file_name, img_bgr_Flip)){
+                std::cerr << "[Error] Failed to save image: " << combined_file_name << std::endl;
             }
 
             std::stringstream plot_file;
@@ -399,16 +425,18 @@ int main(int argc, char **argv){
             std::cout << "Render Iteration: " << render_conut + 1 << std::endl;
             render_conut++;
 
-            std::cout << "Generate Eye Ray Elapsed time: " << diff.count() << " ms" << std::endl;
-            start_time = std::chrono::steady_clock::now();
-            end_time = std::chrono::steady_clock::now();
-            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-            std::cout << "Generate Light Ray Elapsed time: " << diff.count() << " ms" << std::endl;
             ppm_results.resize(W * H);
             bdpt_results.resize(W * H);
             start_time = std::chrono::steady_clock::now();
             run_cuda_ppm(cam, ppm_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H);
+            end_time = std::chrono::steady_clock::now();
+            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "PPM Render Elapsed time: " << diff.count() << " ms" << std::endl;
+            start_time = std::chrono::steady_clock::now();
             run_cuda_bdpt(cam, bdpt_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H);
+            end_time = std::chrono::steady_clock::now();
+            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "BDPT Render Elapsed time: " << diff.count() << " ms" << std::endl;
             float ppm_rms = 0, bdpt_rms = 0;
             int total_width = W * 3;
 
@@ -476,10 +504,10 @@ int main(int argc, char **argv){
                     last_bdpt[image_idx + 2] = current_bdpt[image_idx + 2];
                 }
             }
-            ppm_rms = std::sqrt(ppm_rms) / (W * H * 255.0f);
+            ppm_rms = std::sqrt(ppm_rms) / 255.0f;
             ppm_rms_history.push_back(ppm_rms);
 
-            bdpt_rms = std::sqrt(bdpt_rms) / (W * H * 255.0f);
+            bdpt_rms = std::sqrt(bdpt_rms) / 255.0f;
             bdpt_rms_history.push_back(bdpt_rms);
             fprintf(rms_gp, "plot '-' using 1:2 with lines lw 1.5 title 'PPM RMS', '-' using 1:2 with lines lw 1.5 title 'BDPT RMS'\n");
 
@@ -497,10 +525,10 @@ int main(int argc, char **argv){
 
             fflush(rms_gp);
 
-            end_time = std::chrono::steady_clock::now();
-            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-            std::cout << "Render Elapsed time: " << diff.count() << " ms" << std::endl;
-            std::cout << "Iteration：" << render_conut << " Error：" << ppm_rms << std::endl;
+            std::cout << "Iteration：" << render_conut << std::endl;
+            std::cout << "PPM Error：" << ppm_rms << std::endl;
+            std::cout << "BDPT Error：" << bdpt_rms << std::endl;
+            std::cout <<"------------------------" << std::endl;
             is_first = 0;
         }
         else if(!stop_write){

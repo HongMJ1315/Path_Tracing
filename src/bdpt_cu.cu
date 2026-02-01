@@ -456,7 +456,7 @@ void bdpt_render_wrapper(
     bdpt_init_rng << <eye_blocks, threads >> > (d_states, time(NULL) + 9999, total_pixels);
     cudaDeviceSynchronize();
 
-    printf("Eye Trace Launch: Pixels=%d, Blocks=%d\n", total_pixels, eye_blocks);
+    // printf("Eye Trace Launch: Pixels=%d, Blocks=%d\n", total_pixels, eye_blocks);
 
     cuda_eye_trace_and_connect << <eye_blocks, threads >> > (
         d_lights, num_lights,
