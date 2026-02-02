@@ -249,3 +249,6 @@ __device__ inline float3 random_in_unit_sphere_device(curandState *state){
     } while(dot(p, p) >= 1.0f);
     return p;
 }
+
+std::ostream &operator<<(std::ostream &os, const CudaVec3 &vec);
+std::istream &operator>>(std::istream &is, CudaVec3 &vec);

@@ -1,6 +1,15 @@
 #include "geometric.cuh"
 #include <cmath>
 
+std::ostream &operator<<(std::ostream &os, const CudaVec3 &vec){
+    os << vec.x << " " << vec.y << " " << vec.z;
+    return os;
+}
+std::istream &operator>>(std::istream &is, CudaVec3 &vec){
+    is >> vec.x >> vec.y >> vec.z;
+    return is;
+}
+
 CudaVec3 to_cv3(const glm::vec3 &v){ return { v.x, v.y, v.z }; }
 
 CudaMaterial to_cmtl(const Material &m){

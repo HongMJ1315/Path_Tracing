@@ -350,13 +350,9 @@ __global__ void ppm_resolve_image(
         float3 flux = to_f3(hit_points[idx].accum_flux);
         float r2 = hit_points[idx].radius2;
 
-        // PPM Formula: Radiance = Flux / (N * PI * r^2)
-        // Note: total_emitted_photons is N
         float area = PI * r2;
         float3 radiance = flux / (area * (float) total_emitted_photons);
 
-        // Add to existing image (or overwrite if single pass)
-        // Here we overwrite because the flux is accumulated in HitPoint
         image[idx] = to_CudaVec3(radiance);
     }
 }

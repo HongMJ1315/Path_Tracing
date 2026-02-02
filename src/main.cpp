@@ -106,6 +106,7 @@ int main(int argc, char **argv){
     std::vector<Sphere> balls;
     std::vector<Triangle> triangles;
     std::vector<Light> lights;
+    std::vector<CudaLight> cu_light;
     Camera camera;
     char t;
     Material mtl;
@@ -170,11 +171,6 @@ int main(int argc, char **argv){
             // std::cout << color << " " << mtl.kg << " " << mtl.Kd << " " << mtl.Ks << std::endl;
             // std::cout << "read M" << std::endl;
         }
-        else if(t == 'L'){
-            Light light;
-            input >> light.dir;
-            lights.push_back(light);
-        }
         else if(t == 'G' && GROUPING){
             input >> group_id;
         }
@@ -185,6 +181,15 @@ int main(int argc, char **argv){
                 std::getline(input, trash);
                 continue;
             }
+        }
+        else if(t == 'L'){
+            CudaLight light;
+            float cutoff_deg;
+            std::cout << "read L" << std::endl;
+            input >> light.pos >> light.dir >> light.illum >> cutoff_deg;
+            light.cutoff = glm::radians(cutoff_deg);
+            input >> light.is_parallel;
+            cu_light.push_back(light);
         }
     }
 
@@ -219,6 +224,12 @@ int main(int argc, char **argv){
     std::cout << ball_cnt << std::endl;
     std::cout << "Trainagle:" << std::endl;
     std::cout << tri_cnt << std::endl;
+    std::cout << "Light:" << std::endl;
+    std::cout << cu_light.size() << std::endl;
+
+    for(auto l: cu_light){
+        std::cout << "Light Dir: " << l.dir << " Pos: " << l.pos << " Illum: " << l.illum << " Cutoff: " << l.cutoff << " is_parallel: " << l.is_parallel << std::endl;
+    }
 
 
     std::vector<const Object *> scene;
@@ -254,47 +265,8 @@ int main(int argc, char **argv){
     cam.dx = { dx.x, dx.y, dx.z };
     cam.dy = { dy.x, dy.y, dy.z };
 
-    std::vector<CudaLight> light(4);
-    light[1].dir.x = 1.0f;
-    light[1].dir.y = -3.f;
-    light[1].dir.z = 0.0f;
-    light[1].pos.x = -0.49f;
-    light[1].pos.y = .0f;
-    light[1].pos.z = 0.1f;
-    light[1].illum.x = 0.0f;
-    light[1].illum.y = 1.0f;
-    light[1].illum.z = 1.0f;
-    light[1].cutoff = glm::radians(50.0f);
-    light[2].dir.x = -1.0f;
-    light[2].dir.y = -1.0f;
-    light[2].dir.z = 0.0f;
-    light[2].pos.x = 0.49f;
-    light[2].pos.y = .49f;
-    light[2].pos.z = 0.3f;
-    light[2].illum.x = 1.0f;
-    light[2].illum.y = 1.0f;
-    light[2].illum.z = 0.0f;
-    light[2].cutoff = glm::radians(30.0f);
-    light[3].dir.x = 0.0f;
-    light[3].dir.y = -1.0f;
-    light[3].dir.z = 0.0f;
-    light[3].pos.x = -0.49f;
-    light[3].pos.y = .49f;
-    light[3].pos.z = 0.0f;
-    light[3].illum.x = 1.0f;
-    light[3].illum.y = 0.0f;
-    light[3].illum.z = 1.0f;
-    light[3].cutoff = glm::radians(30.0f);
-    light[0].dir.x = 0.0f;
-    light[0].dir.y = -1.0f;
-    light[0].dir.z = 1.0f;
-    light[0].illum.x = 10.0f;
-    light[0].illum.y = 10.0f;
-    light[0].illum.z = 10.0f;
-    light[0].is_parallel = true;
-
-    move_data_to_cuda_ppm(groups, light, 1000000);
-    move_data_to_cuda_bdpt(groups, light, 100);
+    move_data_to_cuda_ppm(groups, cu_light, 1000000);
+    move_data_to_cuda_bdpt(groups, cu_light, 100);
 
     auto end_time = std::chrono::steady_clock::now();
     auto start_time = std::chrono::steady_clock::now();
@@ -337,9 +309,9 @@ int main(int argc, char **argv){
 
             std::vector<uchar> combined(W * H * 3, 0);
             for(int i = 0; i < W * H; ++i){
-                combined[i * 3 + 0] = std::min(((int)current_ppm[i * 3 + 0] + (int)current_bdpt[i * 3 + 0]) / 2, 255);
-                combined[i * 3 + 1] = std::min(((int)current_ppm[i * 3 + 1] + (int)current_bdpt[i * 3 + 1]) / 2, 255);
-                combined[i * 3 + 2] = std::min(((int)current_ppm[i * 3 + 2] + (int)current_bdpt[i * 3 + 2]) / 2, 255);
+                combined[i * 3 + 0] = std::min(((int) current_ppm[i * 3 + 0] + (int) current_bdpt[i * 3 + 0]) / 2, 255);
+                combined[i * 3 + 1] = std::min(((int) current_ppm[i * 3 + 1] + (int) current_bdpt[i * 3 + 1]) / 2, 255);
+                combined[i * 3 + 2] = std::min(((int) current_ppm[i * 3 + 2] + (int) current_bdpt[i * 3 + 2]) / 2, 255);
             }
 
             cv::Mat bdpt_img = img_process(current_bdpt, W, H);
@@ -528,7 +500,7 @@ int main(int argc, char **argv){
             std::cout << "Iteration：" << render_conut << std::endl;
             std::cout << "PPM Error：" << ppm_rms << std::endl;
             std::cout << "BDPT Error：" << bdpt_rms << std::endl;
-            std::cout <<"------------------------" << std::endl;
+            std::cout << "------------------------" << std::endl;
             is_first = 0;
         }
         else if(!stop_write){
