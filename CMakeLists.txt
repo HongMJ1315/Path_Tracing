@@ -30,6 +30,28 @@ else()
     message(WARNING "Unknown System")
 endif()
 
+# ==========================================
+# 強制關閉所有編譯器 Warning
+# ==========================================
+if(MSVC)
+    # Windows/MSVC 環境使用 /W0 關閉警告
+    target_compile_options(${MY_EXECUTABLE} PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:/W0>
+        $<$<COMPILE_LANGUAGE:CXX>:/W0>
+    )
+else()
+    # Linux/macOS (GCC/Clang) 環境使用 -w 關閉警告
+    target_compile_options(${MY_EXECUTABLE} PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-w>
+        $<$<COMPILE_LANGUAGE:CXX>:-w>
+    )
+endif()
+
+# 針對 CUDA (NVCC) 強制關閉警告
+target_compile_options(${MY_EXECUTABLE} PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:-w>
+)
+
 set_target_properties(${MY_EXECUTABLE}
     PROPERTIES
     CUDA_STANDARD 17

@@ -2,6 +2,7 @@
 #include "glsl.h"
 #include "ppm_cu_helper.h"
 #include "bdpt_cu_helper.h"
+#include "pt_cu_helper.h"
 #include "texture.h"
 #include <iostream>
 #include <fstream>
@@ -227,7 +228,7 @@ int main(int argc, char **argv){
     std::cout << "Light:" << std::endl;
     std::cout << cu_light.size() << std::endl;
 
-    for(auto l: cu_light){
+    for(auto l : cu_light){
         std::cout << "Light Dir: " << l.dir << " Pos: " << l.pos << " Illum: " << l.illum << " Cutoff: " << l.cutoff << " is_parallel: " << l.is_parallel << std::endl;
     }
 
@@ -237,10 +238,10 @@ int main(int argc, char **argv){
     for(const auto &s : balls)      scene.push_back(&s);
     for(const auto &t : triangles)  scene.push_back(&t);
 
-    std::vector<float>  ppm_buffer(H * W * 3, 0), bdpt_buffer(H * W * 3, 0);
+    std::vector<float>  ppm_buffer(H * W * 3, 0), bdpt_buffer(H * W * 3, 0), pt_buffer(H * W * 3, 0);
     std::vector<unsigned char> framebuffer(W * H * 3 * 3, 0),
-        last_ppm(W * H * 3, 0), last_bdpt(W * H * 3, 0),
-        current_ppm(W * H * 3, 0), current_bdpt(W * H * 3, 0);
+        last_ppm(W * H * 3, 0), last_bdpt(W * H * 3, 0), last_pt(W * H * 3, 0),
+        current_ppm(W * H * 3, 0), current_bdpt(W * H * 3, 0), current_pt(W * H * 3, 0);
     int render_conut = 0;
 
     int pixel_cursor = 0;
@@ -267,6 +268,7 @@ int main(int argc, char **argv){
 
     move_data_to_cuda_ppm(groups, cu_light, 1000000);
     move_data_to_cuda_bdpt(groups, cu_light, 100);
+    move_data_to_cuda_pt(groups, cu_light, 100);
 
     auto end_time = std::chrono::steady_clock::now();
     auto start_time = std::chrono::steady_clock::now();
@@ -285,9 +287,11 @@ int main(int argc, char **argv){
         fflush(rms_gp);
     }
 
-    std::vector<float> ppm_rms_history, bdpt_rms_history;
-    std::vector<CudaVec3> ppm_results(W * H);
-    std::vector<CudaVec3> bdpt_results(W * H);
+    std::vector<float> ppm_rms_history, bdpt_rms_history, diff_rms_history, pt_rms_history;
+    std::vector<float3> ppm_results(W * H);
+    std::vector<float3> bdpt_results(W *H);
+    std::vector<float3> pt_results(W *H);
+    
     while(!glfwWindowShouldClose(window)){
         /*--------------------------
         Image Save Function
@@ -353,7 +357,7 @@ int main(int argc, char **argv){
             fprintf(rms_gp, "set terminal pngcairo size 800, 600 enhanced font 'Arial,12'\n");
             fprintf(rms_gp, "set output '%s'\n", plot_filename.c_str());
 
-            fprintf(rms_gp, "plot '-' using 1:2 with lines title 'PPM RMS', '-' using 1:2 with lines title 'BDPT RMS'\n");
+            fprintf(rms_gp, "plot '-' using 1:2 with lines title 'PPM RMS', '-' using 1:2 with lines title 'BDPT RMS', '-' using 1:2 with lines title 'PT RMS', '-' using 1:2 with lines title 'DIFF RMS'\n");
 
             for(int i = 0; i < (int) ppm_rms_history.size(); ++i){
                 fprintf(rms_gp, "%d %f\n", i, ppm_rms_history[i]);
@@ -362,6 +366,11 @@ int main(int argc, char **argv){
 
             for(int i = 0; i < (int) bdpt_rms_history.size(); ++i){
                 fprintf(rms_gp, "%d %f\n", i, bdpt_rms_history[i]);
+            }
+            fprintf(rms_gp, "e\n");
+
+            for(int i = 0; i < (int) pt_rms_history.size(); ++i){
+                fprintf(rms_gp, "%d %f\n", i, pt_rms_history[i]);
             }
             fprintf(rms_gp, "e\n");
 
@@ -409,33 +418,54 @@ int main(int argc, char **argv){
             end_time = std::chrono::steady_clock::now();
             diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
             std::cout << "BDPT Render Elapsed time: " << diff.count() << " ms" << std::endl;
-            float ppm_rms = 0, bdpt_rms = 0;
+            start_time = std::chrono::steady_clock::now();
+            run_cuda_pt(cam, pt_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H);
+            end_time = std::chrono::steady_clock::now();
+            diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "PT Render Elapsed time: " << diff.count() << " ms" << std::endl;
+
+            float ppm_rms = 0, bdpt_rms = 0, pt_rms = 0, diff_rms = 0;
             int total_width = W * 3;
 
             for(int i = 0; i < W; i++){
                 for(int j = 0; j < H; j++){
-                    CudaVec3 ppm_cu_col = ppm_results[j * W + i];
+                    float3 ppm_cu_col = ppm_results[j * W + i];
                     glm::vec3 ppm_col = glm::vec3(ppm_cu_col.x, ppm_cu_col.y, ppm_cu_col.z);
                     ppm_col = glm::clamp(ppm_col, glm::vec3(0.0f), glm::vec3(1.0f));
                     ppm_col = glm::pow(ppm_col, glm::vec3(1.0f / 2.2f));
                     float ppm[3] = { ppm_col.x, ppm_col.y, ppm_col.z };
 
-                    CudaVec3 bdpt_cu_col = bdpt_results[j * W + i];
+                    float3 bdpt_cu_col = bdpt_results[j * W + i];
                     glm::vec3 bdpt_col = glm::vec3(bdpt_cu_col.x, bdpt_cu_col.y, bdpt_cu_col.z);
                     bdpt_col = glm::clamp(bdpt_col, glm::vec3(0.0f), glm::vec3(1.0f));
                     bdpt_col = glm::pow(bdpt_col, glm::vec3(1.0f / 2.2f));
                     float bdpt[3] = { bdpt_col.x, bdpt_col.y, bdpt_col.z };
+
+                    float3 pt_cu_col = pt_results[j * W + i];
+                    glm::vec3 pt_col = glm::vec3(pt_cu_col.x, pt_cu_col.y, pt_cu_col.z);
+                    pt_col = glm::clamp(pt_col, glm::vec3(0.0f), glm::vec3(1.0f));
+                    pt_col = glm::pow(pt_col, glm::vec3(1.0f / 2.2f));
+                    float pt[3] = { pt_col.x, pt_col.y, pt_col.z };
 
                     int row_flipped = H - 1 - j; // Y軸翻轉
                     int image_idx = (size_t(row_flipped) * W + i) * 3;
 
                     int ppm_frame_idx = (size_t(row_flipped) * total_width + i) * 3;
                     int bdpt_frame_idx = (size_t(row_flipped) * total_width + (i + W)) * 3;
+                    // int pt_frame_idx = (size_t(row_flipped) * total_width + (i + W * 3)) * 3;
                     int combined_frame_idx = (size_t(row_flipped) * total_width + (i + W * 2)) * 3;
 
                     ppm_buffer[image_idx + 0] += ppm_col.r;
                     ppm_buffer[image_idx + 1] += ppm_col.g;
                     ppm_buffer[image_idx + 2] += ppm_col.b;
+
+                    bdpt_buffer[image_idx + 0] += bdpt_col.r;
+                    bdpt_buffer[image_idx + 1] += bdpt_col.g;
+                    bdpt_buffer[image_idx + 2] += bdpt_col.b;
+
+                    pt_buffer[image_idx + 0] += pt_col.r;
+                    pt_buffer[image_idx + 1] += pt_col.g;
+                    pt_buffer[image_idx + 2] += pt_col.b;
 
                     current_ppm[image_idx + 0] = (unsigned char) ((ppm_buffer[image_idx + 0] / (float) render_conut) * 255.f);
                     current_ppm[image_idx + 1] = (unsigned char) ((ppm_buffer[image_idx + 1] / (float) render_conut) * 255.f);
@@ -445,9 +475,6 @@ int main(int argc, char **argv){
                     framebuffer[ppm_frame_idx + 1] = current_ppm[image_idx + 1];
                     framebuffer[ppm_frame_idx + 2] = current_ppm[image_idx + 2];
 
-                    bdpt_buffer[image_idx + 0] += bdpt_col.r;
-                    bdpt_buffer[image_idx + 1] += bdpt_col.g;
-                    bdpt_buffer[image_idx + 2] += bdpt_col.b;
 
                     current_bdpt[image_idx + 0] = (unsigned char) ((bdpt_buffer[image_idx + 0] / (float) render_conut) * 255.f);
                     current_bdpt[image_idx + 1] = (unsigned char) ((bdpt_buffer[image_idx + 1] / (float) render_conut) * 255.f);
@@ -457,15 +484,20 @@ int main(int argc, char **argv){
                     framebuffer[bdpt_frame_idx + 1] = current_bdpt[image_idx + 1];
                     framebuffer[bdpt_frame_idx + 2] = current_bdpt[image_idx + 2];
 
-                    framebuffer[combined_frame_idx + 0] = (unsigned char) ((int) (current_ppm[image_idx + 0] + (int) current_bdpt[image_idx + 0]) / 2.f);
-                    framebuffer[combined_frame_idx + 1] = (unsigned char) ((int) (current_ppm[image_idx + 1] + (int) current_bdpt[image_idx + 1]) / 2.f);
-                    framebuffer[combined_frame_idx + 2] = (unsigned char) ((int) (current_ppm[image_idx + 2] + (int) current_bdpt[image_idx + 2]) / 2.f);
+                    // framebuffer[combined_frame_idx + 0] = (unsigned char) ((int) (current_ppm[image_idx + 0] + (int) current_bdpt[image_idx + 0]) / 2.f);
+                    // framebuffer[combined_frame_idx + 1] = (unsigned char) ((int) (current_ppm[image_idx + 1] + (int) current_bdpt[image_idx + 1]) / 2.f);
+                    // framebuffer[combined_frame_idx + 2] = (unsigned char) ((int) (current_ppm[image_idx + 2] + (int) current_bdpt[image_idx + 2]) / 2.f);
+
+                    framebuffer[combined_frame_idx + 0] = (unsigned char) ((pt_buffer[image_idx + 0] / (float) render_conut) * 255.f);
+                    framebuffer[combined_frame_idx + 1] = (unsigned char) ((pt_buffer[image_idx + 1] / (float) render_conut) * 255.f);
+                    framebuffer[combined_frame_idx + 2] = (unsigned char) ((pt_buffer[image_idx + 2] / (float) render_conut) * 255.f);
 
                     if(!is_first){
                         for(int k = 0; k < 3; k++){
-
                             ppm_rms += std::powf(current_ppm[image_idx + k] - last_ppm[image_idx + k], 2);
                             bdpt_rms += std::powf(current_bdpt[image_idx + k] - last_bdpt[image_idx + k], 2);
+                            pt_rms += std::powf(current_pt[image_idx + k] - last_pt[image_idx + k], 2);
+                            diff_rms += std::powf(current_ppm[image_idx + k] - current_bdpt[image_idx + k], 2);
                         }
                     }
                     last_ppm[image_idx + 0] = current_ppm[image_idx + 0];
@@ -474,6 +506,9 @@ int main(int argc, char **argv){
                     last_bdpt[image_idx + 0] = current_bdpt[image_idx + 0];
                     last_bdpt[image_idx + 1] = current_bdpt[image_idx + 1];
                     last_bdpt[image_idx + 2] = current_bdpt[image_idx + 2];
+                    last_pt[image_idx + 0] = current_pt[image_idx + 0];
+                    last_pt[image_idx + 1] = current_pt[image_idx + 1];
+                    last_pt[image_idx + 2] = current_pt[image_idx + 2];
                 }
             }
             ppm_rms = std::sqrt(ppm_rms) / 255.0f;
@@ -481,7 +516,14 @@ int main(int argc, char **argv){
 
             bdpt_rms = std::sqrt(bdpt_rms) / 255.0f;
             bdpt_rms_history.push_back(bdpt_rms);
-            fprintf(rms_gp, "plot '-' using 1:2 with lines lw 1.5 title 'PPM RMS', '-' using 1:2 with lines lw 1.5 title 'BDPT RMS'\n");
+
+            pt_rms = std::sqrt(pt_rms) / 255.0f;
+            pt_rms_history.push_back(pt_rms);
+
+            diff_rms = std::sqrt(diff_rms) / 255.0f;
+            diff_rms_history.push_back(diff_rms);
+
+            fprintf(rms_gp, "plot '-' using 1:2 with lines lw 1.5 title 'PPM RMS', '-' using 1:2 with lines lw 1.5 title 'BDPT RMS', '-' using 1:2 with lines lw 1.5 title 'PT RMS', '-' using 1:2 with lines lw 1.5 title 'DIFF RMS'\n");
 
             // 第一組：PPM
             for(int i = 0; i < (int) ppm_rms_history.size(); ++i){
@@ -495,11 +537,24 @@ int main(int argc, char **argv){
             }
             fprintf(rms_gp, "e\n");
 
+            // 第三組：PPM與BDPT的差異
+            for(int i = 0; i < (int) diff_rms_history.size(); ++i){
+                fprintf(rms_gp, "%d %f\n", i, diff_rms_history[i]);
+            }
+            fprintf(rms_gp, "e\n");
+
+            for(int i = 0; i < (int) pt_rms_history.size(); ++i){
+                fprintf(rms_gp, "%d %f\n", i, pt_rms_history[i]);
+            }
+            fprintf(rms_gp, "e\n");
+
             fflush(rms_gp);
 
             std::cout << "Iteration：" << render_conut << std::endl;
             std::cout << "PPM Error：" << ppm_rms << std::endl;
             std::cout << "BDPT Error：" << bdpt_rms << std::endl;
+            std::cout << "PT Error：" << pt_rms << std::endl;
+            std::cout << "PPM-BDPT Difference：" << diff_rms << std::endl;
             std::cout << "------------------------" << std::endl;
             is_first = 0;
         }

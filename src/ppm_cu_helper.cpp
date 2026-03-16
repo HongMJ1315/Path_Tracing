@@ -5,8 +5,8 @@ namespace ppm_ns{
     std::vector<CudaSphere> cuda_spheres;
     std::vector<CudaTriangle> cuda_triangles;
     std::vector<CudaLight> cuda_lights;
-    CudaVec3 scene_max_bound = { -1e9f, -1e9f, -1e9f };
-    CudaVec3 scene_min_bound = { 1e9f, 1e9f, 1e9f };
+    float3 scene_max_bound = { -1e9f, -1e9f, -1e9f };
+    float3 scene_min_bound = { 1e9f, 1e9f, 1e9f };
     int light_sample = 0;
 }
 
@@ -57,7 +57,7 @@ void move_data_to_cuda_ppm(std::map<int, AABB> groups, std::vector<CudaLight> &l
     ppm_ns::light_sample = light_sample;
 }
 
-void run_cuda_ppm(CudaCamera cam, CudaVec3 *image_buffer, int light_depth, int eye_depth, int W, int H){
+void run_cuda_ppm(CudaCamera cam, float3 *image_buffer, int light_depth, int eye_depth, int W, int H){
     ppm_render_wrapper(
         ppm_ns::cuda_lights.data(), ppm_ns::cuda_lights.size(),
         ppm_ns::cuda_spheres.data(), ppm_ns::cuda_spheres.size(),

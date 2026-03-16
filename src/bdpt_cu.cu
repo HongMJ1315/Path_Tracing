@@ -16,7 +16,7 @@ __global__ void cuda_light_trace(
     const CudaLight *cuda_lights, int num_lights,
     const CudaSphere *cuda_spheres, int num_spheres,
     const CudaTriangle *cuda_triangles, int num_triangles,
-    const CudaVec3 min_bound, const CudaVec3 max_bound,
+    const float3 min_bound, const float3 max_bound,
     CudaLightVertex *cuda_light_vertices,
     curandState *states,
     int max_depth, int total_paths
@@ -35,10 +35,10 @@ __global__ void cuda_light_trace(
     curandState localState = states[idx];
 
     if(light.is_parallel){
-        ray_dir = normalize(to_f3(light.dir));
+        ray_dir = normalize( light.dir);
 
-        float3 scene_center = (to_f3(min_bound) + to_f3(max_bound)) * 0.5f;
-        float3 diag = to_f3(max_bound) - to_f3(min_bound);
+        float3 scene_center = ( min_bound) +  max_bound * 0.5f;
+        float3 diag =  max_bound -  min_bound;
         float scene_radius = length(diag) * 0.5f;
 
         float3 w = ray_dir;
@@ -60,9 +60,9 @@ __global__ void cuda_light_trace(
         ray_point = scene_center - ray_dir * (scene_radius * 2.0f) + u * offset_u + v * offset_v;
     }
     else{
-        ray_point = to_f3(light.pos);
+        ray_point =  light.pos;
 
-        float3 w = normalize(to_f3(light.dir));
+        float3 w = normalize( light.dir);
         float3 u, v;
 
         if(fabs(w.x) > 0.9f) u = make_float3(0.0f, 1.0f, 0.0f);
@@ -85,12 +85,12 @@ __global__ void cuda_light_trace(
         ray_dir = normalize(u * local_dir.x + v * local_dir.y + w * local_dir.z);
     }
 
-    float3 throughput = to_f3(light.illum);
+    float3 throughput =  light.illum;
 
     CudaLightVertex &vertex0 = cuda_light_vertices[path_base_idx];
-    vertex0.pos = to_CudaVec3(ray_point);
-    vertex0.normal = to_CudaVec3(ray_dir);
-    vertex0.throughput = to_CudaVec3(throughput);
+    vertex0.pos =  ray_point;
+    vertex0.normal =  ray_dir;
+    vertex0.throughput =  throughput;
     vertex0.is_light_source = true;
     vertex0.source_cutoff = light.cutoff;
     vertex0.is_parallel = light.is_parallel;
@@ -166,11 +166,11 @@ __global__ void cuda_light_trace(
         else{
             ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
             ray_point = hit.pos + ray_dir * EPSILON;
-            throughput = throughput * to_f3(hit.mtl.Kd); // Diffuse attenuation
+            throughput = throughput *  hit.mtl.Kd; // Diffuse attenuation
 
-            vertex.pos = to_CudaVec3(hit.pos);
-            vertex.normal = to_CudaVec3(hit.normal);
-            vertex.throughput = to_CudaVec3(throughput);
+            vertex.pos =  hit.pos;
+            vertex.normal =  hit.normal;
+            vertex.throughput =  throughput;
             vertex.mtl = hit.mtl;
             vertex.is_light_source = false;
             vertex.pdf_fwd = pdf_fwd;
@@ -185,6 +185,80 @@ __global__ void cuda_light_trace(
 }
 
 
+// [Code Block: CUDA BDPT MIS Implementation]
+__device__ float calculate_mis_weight(
+    const CudaEyeVertex *eye_path, int s_idx,
+    const CudaLightVertex *light_path, int t_idx,
+    const float3 &dir_e_to_l, float dist2){
+    if(s_idx < 0 || t_idx < 0) return 0.0f;
+
+    const CudaEyeVertex &ev = eye_path[s_idx];
+    const CudaLightVertex &lv = light_path[t_idx];
+
+    float3 ns = normalize( ev.normal);
+    float3 nt = normalize( lv.normal);
+
+    float cos_s = fmaxf(0.0f, dot(ns, dir_e_to_l));
+    float cos_t = fmaxf(0.0f, dot(nt, dir_e_to_l * -1.0f));
+
+    if(cos_s <= 0.0f || cos_t <= 0.0f || dist2 < 1e-6f) return 0.0f;
+
+    // 1. 計算連接段 (Connection Segment) 的互相轉換 PDF (Area Measure)
+    float pdf_omega_s = cos_s / 3.14159265359f; // 假設純 Diffuse
+    float pdf_omega_t = cos_t / 3.14159265359f; // 假設純 Diffuse
+
+    float pdf_s_to_t = pdf_omega_s * cos_t / dist2; // s 射向 t 的 Area PDF
+    float pdf_t_to_s = pdf_omega_t * cos_s / dist2; // t 射向 s 的 Area PDF
+
+    float sum_ratios = 1.0f; // 包含當前策略 (s,t) 自己的比值 = 1.0
+
+    // 2. 往 Eye Path 方向展開 (評估 s-1, t+1 等策略)
+    float current_ratio = 1.0f;
+    float prev_pdf_rev = pdf_t_to_s; // 假想一束光從 t 打到 s
+
+    for(int i = s_idx; i > 0; --i){
+        const CudaEyeVertex &curr_e = eye_path[i];
+        const CudaEyeVertex &prev_e = eye_path[i - 1];
+
+        if(curr_e.mtl.reflect > 0.0f || curr_e.mtl.refract > 0.0f){
+            break;
+        }
+
+        current_ratio *= prev_pdf_rev / curr_e.pdf_fwd;
+        sum_ratios += current_ratio;
+
+        prev_pdf_rev = curr_e.pdf_rev;
+    }
+
+    current_ratio = 1.0f;
+    prev_pdf_rev = pdf_s_to_t; // 假想視線從 s 打到 t
+
+    for(int i = t_idx; i > 0; --i){
+        const CudaLightVertex &curr_l = light_path[i];
+
+        if(curr_l.is_light_source){
+            current_ratio *= prev_pdf_rev / curr_l.pdf_fwd;
+            sum_ratios += current_ratio;
+            break;
+        }
+
+        if(curr_l.mtl.reflect > 0.0f || curr_l.mtl.refract > 0.0f){
+            break;
+        }
+
+        current_ratio *= prev_pdf_rev / fmaxf(curr_l.pdf_fwd, 1e-8f); // 防呆
+        sum_ratios += current_ratio;
+        prev_pdf_rev = curr_l.pdf_rev;
+    }
+
+
+    if(isnan(sum_ratios) || isinf(sum_ratios) || sum_ratios <= 0.0f){
+        return 0.0f;
+    }
+
+    return 1.0f / sum_ratios;
+}
+
 /*--------------------------
 Eye Trace Kernel (Fixed Logic)
 --------------------------*/
@@ -192,13 +266,13 @@ __global__ void cuda_eye_trace_and_connect(
     const CudaLight *cuda_lights, int num_lights,
     const CudaSphere *cuda_spheres, int num_spheres,
     const CudaTriangle *cuda_triangles, int num_triangles,
-    const CudaVec3 min_bound, const CudaVec3 max_bound,
+    const float3 min_bound, const float3 max_bound,
     const CudaCamera cuda_camera,
     CudaLightVertex *cuda_light_vertices, int num_light_vertices,
     CudaEyeVertex *cuda_eye_vertices,
     curandState *states,
     int W, int H,
-    int max_depth, int light_path_depth, CudaVec3 *cuda_image
+    int max_depth, int light_path_depth, float3 *cuda_image
 ){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= W * H) return;
@@ -213,17 +287,21 @@ __global__ void cuda_eye_trace_and_connect(
     float pixel_x = (float) px + curand_uniform(&localState);
     float pixel_y = (float) py + curand_uniform(&localState);
 
-    float3 ray_point = to_f3(cuda_camera.eye);
+    float3 ray_point =  cuda_camera.eye;
 
-    float3 pixel_pos = to_f3(cuda_camera.UL) +
-        to_f3(cuda_camera.dx) * pixel_x +
-        to_f3(cuda_camera.dy) * pixel_y;
+    float3 pixel_pos =  cuda_camera.UL +
+         cuda_camera.dx * pixel_x +
+         cuda_camera.dy * pixel_y;
 
-    float3 ray_dir = normalize(pixel_pos - to_f3(cuda_camera.eye));
+    float3 ray_dir = normalize(pixel_pos -  cuda_camera.eye);
     float ray_refract = 1.0f;
     float3 throughput = make_float3(1.0f, 1.0f, 1.0f);
 
-    CudaVec3 *pixel = &cuda_image[idx];
+    float3 last_normal = ray_dir; // 初始視為從相機射出
+    float3 last_pos =  cuda_camera.eye;
+    float last_pdf_omega = 1.0f; // 相機出射 PDF (簡化假設)
+
+    float3 *pixel = &cuda_image[idx];
 
     float3 final_color = make_float3(0.0f, 0.0f, 0.0f);
 
@@ -234,42 +312,52 @@ __global__ void cuda_eye_trace_and_connect(
         CudaHit hit = find_closest_hit(ray_point, ray_dir, cuda_spheres, num_spheres, cuda_triangles, num_triangles);
         if(!hit.hit) break;
 
-        vertex.pos = to_CudaVec3(hit.pos);
-        vertex.normal = to_CudaVec3(hit.normal);
-        vertex.throughput = to_CudaVec3(throughput);
+        float dist2_cam = dot(hit.pos - last_pos, hit.pos - last_pos);
+        float cos_at_hit = abs(dot(hit.normal, ray_dir * -1.0f));
+        float cos_at_prev = abs(dot(last_normal, ray_dir));
+
+        float safe_dist2 = fmaxf(dist2_cam, 1e-6f);
+
+        float pdf_fwd = last_pdf_omega * cos_at_hit / safe_dist2;
+        float pdf_rev_omega = cos_at_hit / PI;
+        float pdf_rev = pdf_rev_omega * cos_at_prev / safe_dist2;
+
+        vertex.pos =  hit.pos;
+        vertex.normal =  hit.normal;
+        vertex.throughput =  throughput;
         vertex.mtl = hit.mtl;
-        vertex.pdf_fwd = 1.0f; // Placeholder
-        vertex.pdf_rev = 1.0f; // Placeholder
+        vertex.pdf_fwd = pdf_fwd; // Placeholder
+        vertex.pdf_rev = pdf_rev; // Placeholder
 
         // Connect to Light Vertices
         float3 total_L = make_float3(0.0f, 0.0f, 0.0f);
         for(int light_idx = 0; light_idx < num_light_vertices; light_idx++){
             CudaLightVertex lv = cuda_light_vertices[light_idx];
-            float3 lv_pos = to_f3(lv.pos);
-            float3 lv_normal = to_f3(lv.normal);
-            float3 lv_throughput = to_f3(lv.throughput);
-            if(lv.is_light_source){
-                float scene_radius = 0.075f;
-                float3 w = lv_normal;
-                float3 u, v;
-                if(fabs(w.x) > 0.9f) u = make_float3(0.0f, 1.0f, 0.0f);
-                else u = make_float3(1.0f, 0.0f, 0.0f);
-                v = normalize(cross(w, u));
-                u = normalize(cross(v, w));
-                float r1 = curand_uniform(&localState);
-                float r2 = curand_uniform(&localState);
-                float plane_size = scene_radius * 2.0f;
-                float offset_u = (r1 - 0.5f) * plane_size;
-                float offset_v = (r2 - 0.5f) * plane_size;
-                lv_pos = lv_pos + u * offset_u + v * offset_v;
-            }
+            float3 lv_pos =  lv.pos;
+            float3 lv_normal =  lv.normal;
+            float3 lv_throughput =  lv.throughput;
+            // if(lv.is_light_source){
+            //     float scene_radius = 0.075f;
+            //     float3 w = lv_normal;
+            //     float3 u, v;
+            //     if(fabs(w.x) > 0.9f) u = make_float3(0.0f, 1.0f, 0.0f);
+            //     else u = make_float3(1.0f, 0.0f, 0.0f);
+            //     v = normalize(cross(w, u));
+            //     u = normalize(cross(v, w));
+            //     float r1 = curand_uniform(&localState);
+            //     float r2 = curand_uniform(&localState);
+            //     float plane_size = scene_radius * 2.0f;
+            //     float offset_u = (r1 - 0.5f) * plane_size;
+            //     float offset_v = (r2 - 0.5f) * plane_size;
+            //     lv_pos = lv_pos + u * offset_u + v * offset_v;
+            // }
 
 
             CudaEyeVertex &ev = vertex;
-            float3 ev_pos = to_f3(ev.pos);
-            float3 ev_normal = to_f3(ev.normal);
-            float3 ev_throughput = to_f3(ev.throughput);
-            float3 ev_kd = to_f3(ev.mtl.Kd);
+            float3 ev_pos =  ev.pos;
+            float3 ev_normal =  ev.normal;
+            float3 ev_throughput =  ev.throughput;
+            float3 ev_kd =  ev.mtl.Kd;
 
             float3 fE = ev_kd / PI; // Diffuse BRDF
 
@@ -289,7 +377,7 @@ __global__ void cuda_eye_trace_and_connect(
                 int path_idx = light_idx / light_path_depth;
                 int real_light_idx = path_idx % num_lights;
 
-                float3 light_dir = normalize(to_f3(cuda_lights[real_light_idx].dir));
+                float3 light_dir = normalize( cuda_lights[real_light_idx].dir);
                 float cos_theta = dot(light_dir, wi * -1.0f);
                 float cutoff_cos = cosf(lv.source_cutoff);
                 if(cos_theta < cutoff_cos) continue;
@@ -298,7 +386,18 @@ __global__ void cuda_eye_trace_and_connect(
             if(transmittance.x <= 0.0f && transmittance.y <= 0.0f && transmittance.z <= 0.0f) transmittance = make_float3(0.0f, 0.0f, 0.0f);
             float G = (cosE * cosL) / dist2;
 
-            float3 contrib = ev_throughput * fE * G * lv_throughput * transmittance;
+            CudaEyeVertex *current_eye_path = &cuda_eye_vertices[path_base_idx];
+            int path_idx = light_idx / light_path_depth;
+            CudaLightVertex *current_light_path = &cuda_light_vertices[path_idx * light_path_depth];
+            int current_t_idx = light_idx % light_path_depth;
+
+            float mis_w = calculate_mis_weight(
+                current_eye_path, depth,          // s_idx = 當前 eye depth
+                current_light_path, current_t_idx, // t_idx = 當前 light depth
+                d_vec, dist2
+            );
+
+            float3 contrib = ev_throughput * fE * G * lv_throughput * transmittance * mis_w;
             total_L = total_L + contrib;
         }
         final_color = final_color + total_L;
@@ -352,12 +451,16 @@ __global__ void cuda_eye_trace_and_connect(
         else{
             ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
             ray_point = hit.pos + ray_dir * EPSILON;
-            throughput = throughput * to_f3(hit.mtl.Kd); // Diffuse attenuation
+            throughput = throughput *  hit.mtl.Kd; // Diffuse attenuation
+
+            last_pdf_omega = cos_at_hit / PI;
+            last_normal = hit.normal;
+            last_pos = hit.pos;
         }
 
     }
 
-    *pixel = to_CudaVec3(final_color);
+    *pixel =  final_color;
     states[idx] = localState;
 }
 
@@ -365,8 +468,8 @@ void bdpt_render_wrapper(
     const CudaLight *h_lights, int num_lights,
     const CudaSphere *h_spheres, int num_spheres,
     const CudaTriangle *h_triangles, int num_triangles,
-    CudaVec3 scene_min, CudaVec3 scene_max,
-    const CudaCamera cuda_camera, CudaVec3 *h_image,
+    float3 scene_min, float3 scene_max,
+    const CudaCamera cuda_camera, float3 *h_image,
     int W, int H,
     int light_depth, int light_sample, int eye_depth
 ){
@@ -444,8 +547,8 @@ void bdpt_render_wrapper(
     err = cudaMalloc(&d_cuda_eye_vertices, sizeof(CudaEyeVertex) * total_eye_vertices_size);
     if(err != cudaSuccess){ printf("Malloc EyeVertices failed: %s\n", cudaGetErrorString(err)); return; }
 
-    CudaVec3 *d_image;
-    cudaMalloc(&d_image, sizeof(CudaVec3) * W * H);
+    float3 *d_image;
+    cudaMalloc(&d_image, sizeof(float3) * W * H);
 
     // --- Eye Trace Launch Configuration ---
     // 關鍵修正：這裡必須使用 W * H 來計算 Block 數量
@@ -477,7 +580,7 @@ void bdpt_render_wrapper(
     // ---------------------------------------------------------
     // 4. Retrieve Data
     // ---------------------------------------------------------
-    cudaMemcpy(h_image, d_image, sizeof(CudaVec3) * W * H, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_image, d_image, sizeof(float3) * W * H, cudaMemcpyDeviceToHost);
 
     // ---------------------------------------------------------
     // 5. Cleanup

@@ -6,22 +6,21 @@
 #define EPSILON 1e-4f
 #define PI 3.14159265358979323846f
 
-struct CudaVec3{ float x, y, z; };
 
 struct CudaMaterial{
-    CudaVec3 Kd, Kg, Ks;
+    float3 Kd, Kg, Ks;
     float glossy, exp, refract, reflect;
 };
 
 struct CudaSphere{
-    CudaVec3 center;
+    float3 center;
     float r;
     CudaMaterial mtl;
     int id;
 };
 
 struct CudaTriangle{
-    CudaVec3 v0, v1, v2;
+    float3 v0, v1, v2;
     CudaMaterial mtl;
     int id;
 };
@@ -34,10 +33,10 @@ struct CudaHit{
 };
 
 struct CudaHitPoint{
-    CudaVec3 pos;
-    CudaVec3 normal;
-    CudaVec3 throughput;
-    CudaVec3 accum_flux;
+    float3 pos;
+    float3 normal;
+    float3 throughput;
+    float3 accum_flux;
     CudaMaterial mtl;
     int pixel_idx;
     float radius2;
@@ -46,21 +45,21 @@ struct CudaHitPoint{
 };
 
 struct CudaCamera{
-    CudaVec3 eye, U, V, W, UL, dx, dy;
+    float3 eye, U, V, W, UL, dx, dy;
 };
 
-struct CudaRay{ CudaVec3 point, vec; };
+struct CudaRay{ float3 point, dir; };
 
 struct CudaLight{
-    CudaVec3 pos, dir, illum;
+    float3 pos, dir, illum;
     float cutoff;
     int is_parallel;
 };
 
 // Host Helper Declarations
-CudaVec3 to_cv3(const glm::vec3 &v);
+float3 to_cv3(const glm::vec3 &v);
 CudaMaterial to_cmtl(const Material &m);
-CudaVec3 normalize_cuda(const CudaVec3 &v);
+float3 normalize_cuda(const float3 &v);
 
 // =========================================================
 // Device Inline Implementations (必須放在 Header)
@@ -85,8 +84,6 @@ __device__ inline float3 refract(const float3 &I, const float3 &N, float eta){
     return I * eta - N * (eta * dotNI + sqrtf(k));
 }
 
-__device__ inline float3 to_f3(const CudaVec3 &v){ return make_float3(v.x, v.y, v.z); }
-__device__ inline CudaVec3 to_CudaVec3(const float3 &v){ CudaVec3 cv; cv.x = v.x; cv.y = v.y; cv.z = v.z; return cv; }
 
 __device__ inline float3 pow_f3(const float3 &base, float exp){
     return make_float3(powf(base.x, exp), powf(base.y, exp), powf(base.z, exp));
@@ -96,7 +93,7 @@ __device__ inline float3 pow_f3(const float3 &base, float exp){
 Intersection Functions (Implementations)
 --------------------------*/
 __device__ inline bool intersect_sphere(const float3 &ro, const float3 &rd, const CudaSphere &s, float &t, float max_dist){
-    float3 oc = ro - to_f3(s.center);
+    float3 oc = ro - s.center;
     float b = dot(oc, rd);
     float c = dot(oc, oc) - s.r * s.r;
     float h = b * b - c;
@@ -117,9 +114,9 @@ __device__ inline bool intersect_sphere(const float3 &ro, const float3 &rd, cons
 }
 
 __device__ inline bool intersect_triangle(const float3 &ro, const float3 &rd, const CudaTriangle &tri, float &t, float max_dist){
-    float3 v0 = to_f3(tri.v0);
-    float3 v1 = to_f3(tri.v1);
-    float3 v2 = to_f3(tri.v2);
+    float3 v0 = tri.v0;
+    float3 v1 = tri.v1;
+    float3 v2 = tri.v2;
 
     float3 e1 = v1 - v0;
     float3 e2 = v2 - v0;
@@ -166,7 +163,7 @@ __device__ inline float3 check_visibility(
         if(intersect_triangle(p1, dir, triangles[i], t, max_d)){
             if(t > min_d){
                 if(triangles[i].mtl.refract <= 0.0f) return make_float3(0.0f, 0.0f, 0.0f);
-                transmission = transmission * to_f3(triangles[i].mtl.Ks);
+                transmission = transmission * triangles[i].mtl.Ks;
             }
         }
     }
@@ -175,7 +172,7 @@ __device__ inline float3 check_visibility(
         if(intersect_sphere(p1, dir, spheres[i], t, max_d)){
             if(t > min_d){
                 if(spheres[i].mtl.refract <= 0.0f) return make_float3(0.0f, 0.0f, 0.0f);
-                transmission = transmission * to_f3(spheres[i].mtl.Ks);
+                transmission = transmission * spheres[i].mtl.Ks;
             }
         }
     }
@@ -201,7 +198,7 @@ __device__ inline CudaHit find_closest_hit(
                 best.t = t;
                 best.mtl = spheres[i].mtl;
                 best.pos = ray_point + ray_dir * t;
-                best.normal = normalize(best.pos - to_f3(spheres[i].center));
+                best.normal = normalize(best.pos - spheres[i].center);
                 if(dot(best.normal, ray_dir) > 0.0f) best.normal = best.normal * -1.0f;
             }
         }
@@ -214,9 +211,9 @@ __device__ inline CudaHit find_closest_hit(
                 best.t = t;
                 best.mtl = triangles[i].mtl;
                 best.pos = ray_point + ray_dir * t;
-                float3 v0 = to_f3(triangles[i].v0);
-                float3 v1 = to_f3(triangles[i].v1);
-                float3 v2 = to_f3(triangles[i].v2);
+                float3 v0 = triangles[i].v0;
+                float3 v1 = triangles[i].v1;
+                float3 v2 = triangles[i].v2;
                 best.normal = normalize(cross(v1 - v0, v2 - v0));
                 if(dot(best.normal, ray_dir) > 0.0f) best.normal = best.normal * -1.0f;
             }
@@ -250,5 +247,5 @@ __device__ inline float3 random_in_unit_sphere_device(curandState *state){
     return p;
 }
 
-std::ostream &operator<<(std::ostream &os, const CudaVec3 &vec);
-std::istream &operator>>(std::istream &is, CudaVec3 &vec);
+std::ostream &operator<<(std::ostream &os, const float3 &dir);
+std::istream &operator>>(std::istream &is, float3 &dir);

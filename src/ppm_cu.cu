@@ -15,7 +15,7 @@ __global__ void ppm_init_rng(curandState *states, unsigned long long seed, int t
 }
 
 // *** 關鍵修正：加入 atomicAddVec3 實作 ***
-__device__ void atomicAddVec3(CudaVec3 *addr, float3 val){
+__device__ void atomicAddVec3(float3 *addr, float3 val){
     atomicAdd(&(addr->x), val.x);
     atomicAdd(&(addr->y), val.y);
     atomicAdd(&(addr->z), val.z);
@@ -30,8 +30,8 @@ __device__ int hash_grid_indices(int gx, int gy, int gz){
     return h % HASH_TABLE_SIZE;
 }
 
-__device__ int get_grid_index(float3 pos, CudaVec3 min_bound, float cell_size){
-    float3 rel = pos - to_f3(min_bound);
+__device__ int get_grid_index(float3 pos, float3 min_bound, float cell_size){
+    float3 rel = pos - min_bound;
     int gx = (int) floorf(rel.x / cell_size);
     int gy = (int) floorf(rel.y / cell_size);
     int gz = (int) floorf(rel.z / cell_size);
@@ -46,13 +46,13 @@ __global__ void reset_hash_grid(int *hash_head, int size){
 __global__ void build_hash_grid_kernel(
     CudaHitPoint *hit_points, int num_points,
     int *hash_head, int *hash_next,
-    CudaVec3 min_bound, float cell_size
+    float3 min_bound, float cell_size
 ){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= num_points) return;
     if(!hit_points[idx].valid) return;
 
-    int grid_idx = get_grid_index(to_f3(hit_points[idx].pos), min_bound, cell_size);
+    int grid_idx = get_grid_index(hit_points[idx].pos, min_bound, cell_size);
 
     int old_head = atomicExch(&hash_head[grid_idx], idx);
     hash_next[idx] = old_head;
@@ -69,7 +69,7 @@ __global__ void ppm_eye_trace(
     CudaHitPoint *hit_points,
     curandState *states,
     int W, int H, int max_depth,
-    CudaVec3 *image // 為了直接寫入背景色
+    float3 *image // 為了直接寫入背景色
 ){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= W * H) return;
@@ -86,8 +86,8 @@ __global__ void ppm_eye_trace(
     // Ray Generation
     float pixel_x = (float) px + curand_uniform(&localState);
     float pixel_y = (float) py + curand_uniform(&localState);
-    float3 ray_point = to_f3(cam.eye);
-    float3 pixel_pos = to_f3(cam.UL) + to_f3(cam.dx) * pixel_x + to_f3(cam.dy) * pixel_y;
+    float3 ray_point = cam.eye;
+    float3 pixel_pos = cam.UL + cam.dx * pixel_x + cam.dy * pixel_y;
     float3 ray_dir = normalize(pixel_pos - ray_point);
     float ray_refract = 1.0f;
     float3 throughput = make_float3(1.0f, 1.0f, 1.0f);
@@ -147,10 +147,10 @@ __global__ void ppm_eye_trace(
         }
         else{
             hit_points[idx].valid = true;
-            hit_points[idx].pos = to_CudaVec3(hit.pos);
-            hit_points[idx].normal = to_CudaVec3(hit.normal);
+            hit_points[idx].pos = hit.pos;
+            hit_points[idx].normal = hit.normal;
             hit_points[idx].mtl = hit.mtl;
-            hit_points[idx].throughput = to_CudaVec3(throughput);
+            hit_points[idx].throughput = throughput;
             image[idx] = { 0.0f, 0.0f, 0.0f };
             break;
         }
@@ -167,7 +167,7 @@ __global__ void ppm_photon_trace(
     const CudaTriangle *triangles, int num_triangles,
     CudaHitPoint *hit_points, // 被更新的目標
     int *hash_head, int *hash_next,
-    CudaVec3 min_bound, CudaVec3 max_bound, float cell_size,
+    float3 min_bound, float3 max_bound, float cell_size,
     curandState *states,
     int max_depth, int num_photons
 ){
@@ -182,10 +182,10 @@ __global__ void ppm_photon_trace(
     float ray_refract = 1.0f;
 
     if(light.is_parallel){
-        ray_dir = normalize(to_f3(light.dir));
+        ray_dir = normalize(light.dir);
 
-        float3 scene_center = (to_f3(min_bound) + to_f3(max_bound)) * 0.5f;
-        float3 diag = to_f3(max_bound) - to_f3(min_bound);
+        float3 scene_center = (min_bound + max_bound) * 0.5f;
+        float3 diag = max_bound - min_bound;
         float scene_radius = length(diag) * 0.5f;
 
         float3 w = ray_dir;
@@ -207,9 +207,9 @@ __global__ void ppm_photon_trace(
         ray_point = scene_center - ray_dir * (scene_radius * 2.0f) + u * offset_u + v * offset_v;
     }
     else{
-        ray_point = to_f3(light.pos);
+        ray_point = light.pos;
 
-        float3 w = normalize(to_f3(light.dir));
+        float3 w = normalize(light.dir);
         float3 u, v;
 
         if(fabs(w.x) > 0.9f) u = make_float3(0.0f, 1.0f, 0.0f);
@@ -232,7 +232,7 @@ __global__ void ppm_photon_trace(
         ray_dir = normalize(u * local_dir.x + v * local_dir.y + w * local_dir.z);
     }
 
-    float3 photon_flux = to_f3(light.illum) * (float) num_lights;
+    float3 photon_flux = light.illum * (float) num_lights;
 
 
     for(int depth = 0; depth < max_depth; depth++){
@@ -306,14 +306,14 @@ __global__ void ppm_photon_trace(
                         while(hp_idx != -1){
                             CudaHitPoint &hp = hit_points[hp_idx];
 
-                            if(dot(to_f3(hp.normal), hit.normal) > 0.9f){
-                                float3 hp_pos = to_f3(hp.pos);
+                            if(dot(hp.normal, hit.normal) > 0.9f){
+                                float3 hp_pos = hp.pos;
                                 float3 diff = hp_pos - hit.pos;
                                 float dist2 = dot(diff, diff);
 
                                 if(dist2 < hp.radius2){
-                                    float3 kd = to_f3(hp.mtl.Kd);
-                                    float3 tp = to_f3(hp.throughput);
+                                    float3 kd = hp.mtl.Kd;
+                                    float3 tp = hp.throughput;
                                     float3 energy = photon_flux * kd * tp;
                                     atomicAddVec3(&hp.accum_flux, energy);
                                     atomicAdd(&hp.photon_count, 1.0f);
@@ -327,7 +327,7 @@ __global__ void ppm_photon_trace(
 
 
             ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
-            photon_flux = photon_flux * to_f3(hit.mtl.Kd);
+            photon_flux = photon_flux * hit.mtl.Kd;
             ray_point = hit.pos + ray_dir * EPSILON;
         }
     }
@@ -339,7 +339,7 @@ __global__ void ppm_photon_trace(
 // =========================================================================================
 __global__ void ppm_resolve_image(
     CudaHitPoint *hit_points,
-    CudaVec3 *image,
+    float3 *image,
     int W, int H,
     int total_emitted_photons
 ){
@@ -347,13 +347,13 @@ __global__ void ppm_resolve_image(
     if(idx >= W * H) return;
 
     if(hit_points[idx].valid){
-        float3 flux = to_f3(hit_points[idx].accum_flux);
+        float3 flux = hit_points[idx].accum_flux;
         float r2 = hit_points[idx].radius2;
 
         float area = PI * r2;
         float3 radiance = flux / (area * (float) total_emitted_photons);
 
-        image[idx] = to_CudaVec3(radiance);
+        image[idx] = radiance;
     }
 }
 
@@ -365,8 +365,8 @@ void ppm_render_wrapper(
     const CudaLight *h_lights, int num_lights,
     const CudaSphere *h_spheres, int num_spheres,
     const CudaTriangle *h_triangles, int num_triangles,
-    CudaVec3 scene_min, CudaVec3 scene_max,
-    const CudaCamera cuda_camera, CudaVec3 *h_image,
+    float3 scene_min, float3 scene_max,
+    const CudaCamera cuda_camera, float3 *h_image,
     int W, int H,
     int light_depth, int light_sample, int eye_depth
 ){
@@ -384,8 +384,8 @@ void ppm_render_wrapper(
     CudaHitPoint *d_hit_points;
     cudaMalloc(&d_hit_points, sizeof(CudaHitPoint) * W * H);
 
-    CudaVec3 *d_image;
-    cudaMalloc(&d_image, sizeof(CudaVec3) * W * H);
+    float3 *d_image;
+    cudaMalloc(&d_image, sizeof(float3) * W * H);
 
     curandState *d_states;
     int max_threads = W * H > light_sample ? W * H : light_sample;
@@ -428,7 +428,7 @@ void ppm_render_wrapper(
     cudaDeviceSynchronize();
 
     // 7. Copy Back
-    cudaMemcpy(h_image, d_image, sizeof(CudaVec3) * W * H, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_image, d_image, sizeof(float3) * W * H, cudaMemcpyDeviceToHost);
 
     // Cleanup
     cudaFree(d_lights); cudaFree(d_spheres); cudaFree(d_triangles);

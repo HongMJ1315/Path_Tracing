@@ -4,8 +4,8 @@ namespace bdpt_ns{
     std::vector<CudaSphere> cuda_spheres;
     std::vector<CudaTriangle> cuda_triangles;
     std::vector<CudaLight> cuda_lights;
-    CudaVec3 scene_max_bound = { -1e9f, -1e9f, -1e9f };
-    CudaVec3 scene_min_bound = { 1e9f, 1e9f, 1e9f };
+    float3 scene_max_bound = { -1e9f, -1e9f, -1e9f };
+    float3 scene_min_bound = { 1e9f, 1e9f, 1e9f };
     int light_sample = 0;
 }
 void move_data_to_cuda_bdpt(std::map<int, AABB> groups, std::vector<CudaLight> &lights, int light_sample){
@@ -61,7 +61,7 @@ void move_data_to_cuda_bdpt(std::map<int, AABB> groups, std::vector<CudaLight> &
 
 }
 
-void run_cuda_bdpt(CudaCamera cam, CudaVec3 *image_buffer, int light_depth, int eye_depth, int W, int H){
+void run_cuda_bdpt(CudaCamera cam, float3 *image_buffer, int light_depth, int eye_depth, int W, int H){
     /*--------------------------
     Call CUDA BDPT Kernel
     --------------------------*/
