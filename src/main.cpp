@@ -189,7 +189,9 @@ int main(int argc, char **argv){
             std::cout << "read L" << std::endl;
             input >> light.pos >> light.dir >> light.illum >> cutoff_deg;
             light.cutoff = glm::radians(cutoff_deg);
-            input >> light.is_parallel;
+            input >> light.is_parallel >> light.light_ball.r;
+            light.light_ball.center = light.pos;
+            light.light_ball.mtl.Kd = light.illum;
             cu_light.push_back(light);
         }
     }

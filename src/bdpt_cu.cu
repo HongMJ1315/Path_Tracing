@@ -35,10 +35,10 @@ __global__ void cuda_light_trace(
     curandState localState = states[idx];
 
     if(light.is_parallel){
-        ray_dir = normalize( light.dir);
+        ray_dir = normalize(light.dir);
 
-        float3 scene_center = ( min_bound) +  max_bound * 0.5f;
-        float3 diag =  max_bound -  min_bound;
+        float3 scene_center = (min_bound) +max_bound * 0.5f;
+        float3 diag = max_bound - min_bound;
         float scene_radius = length(diag) * 0.5f;
 
         float3 w = ray_dir;
@@ -60,9 +60,9 @@ __global__ void cuda_light_trace(
         ray_point = scene_center - ray_dir * (scene_radius * 2.0f) + u * offset_u + v * offset_v;
     }
     else{
-        ray_point =  light.pos;
+        ray_point = light.pos;
 
-        float3 w = normalize( light.dir);
+        float3 w = normalize(light.dir);
         float3 u, v;
 
         if(fabs(w.x) > 0.9f) u = make_float3(0.0f, 1.0f, 0.0f);
@@ -83,14 +83,15 @@ __global__ void cuda_light_trace(
         );
 
         ray_dir = normalize(u * local_dir.x + v * local_dir.y + w * local_dir.z);
+        ray_point = ray_point + ray_dir * light.light_ball.r; // 避免自相交
     }
 
-    float3 throughput =  light.illum;
+    float3 throughput = light.illum;
 
     CudaLightVertex &vertex0 = cuda_light_vertices[path_base_idx];
-    vertex0.pos =  ray_point;
-    vertex0.normal =  ray_dir;
-    vertex0.throughput =  throughput;
+    vertex0.pos = ray_point;
+    vertex0.normal = ray_dir;
+    vertex0.throughput = throughput;
     vertex0.is_light_source = true;
     vertex0.source_cutoff = light.cutoff;
     vertex0.is_parallel = light.is_parallel;
@@ -103,8 +104,22 @@ __global__ void cuda_light_trace(
     for(int depth = 1; depth < max_depth; depth++){
         CudaLightVertex &vertex = cuda_light_vertices[path_base_idx + depth];
 
-        CudaHit hit = find_closest_hit(ray_point, ray_dir, cuda_spheres, num_spheres, cuda_triangles, num_triangles);
+        CudaHit hit = find_closest_hit(ray_point, ray_dir,
+            cuda_spheres, num_spheres,
+            cuda_triangles, num_triangles,
+            cuda_lights, num_lights);
         if(!hit.hit) break;
+        if(hit.is_light){
+            vertex.pos = hit.pos;
+            vertex.normal = hit.normal;
+            vertex.throughput = throughput;
+            vertex.mtl = hit.mtl;
+            vertex.is_light_source = true;
+            vertex.source_cutoff = 0.0f; // 不再使用 cutoff
+            vertex.is_parallel = false; // 不再使用 parallel
+
+            break; // 光源終止
+        }
         if(length(throughput) < 1e-4f) break;
 
         float dist2 = dot(hit.pos - last_pos, hit.pos - last_pos);
@@ -166,11 +181,11 @@ __global__ void cuda_light_trace(
         else{
             ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
             ray_point = hit.pos + ray_dir * EPSILON;
-            throughput = throughput *  hit.mtl.Kd; // Diffuse attenuation
+            throughput = throughput * hit.mtl.Kd; // Diffuse attenuation
 
-            vertex.pos =  hit.pos;
-            vertex.normal =  hit.normal;
-            vertex.throughput =  throughput;
+            vertex.pos = hit.pos;
+            vertex.normal = hit.normal;
+            vertex.throughput = throughput;
             vertex.mtl = hit.mtl;
             vertex.is_light_source = false;
             vertex.pdf_fwd = pdf_fwd;
@@ -195,8 +210,8 @@ __device__ float calculate_mis_weight(
     const CudaEyeVertex &ev = eye_path[s_idx];
     const CudaLightVertex &lv = light_path[t_idx];
 
-    float3 ns = normalize( ev.normal);
-    float3 nt = normalize( lv.normal);
+    float3 ns = normalize(ev.normal);
+    float3 nt = normalize(lv.normal);
 
     float cos_s = fmaxf(0.0f, dot(ns, dir_e_to_l));
     float cos_t = fmaxf(0.0f, dot(nt, dir_e_to_l * -1.0f));
@@ -272,7 +287,8 @@ __global__ void cuda_eye_trace_and_connect(
     CudaEyeVertex *cuda_eye_vertices,
     curandState *states,
     int W, int H,
-    int max_depth, int light_path_depth, float3 *cuda_image
+    int max_depth, int light_path_depth, int light_sample,
+    float3 *cuda_image
 ){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= W * H) return;
@@ -287,18 +303,18 @@ __global__ void cuda_eye_trace_and_connect(
     float pixel_x = (float) px + curand_uniform(&localState);
     float pixel_y = (float) py + curand_uniform(&localState);
 
-    float3 ray_point =  cuda_camera.eye;
+    float3 ray_point = cuda_camera.eye;
 
-    float3 pixel_pos =  cuda_camera.UL +
-         cuda_camera.dx * pixel_x +
-         cuda_camera.dy * pixel_y;
+    float3 pixel_pos = cuda_camera.UL +
+        cuda_camera.dx * pixel_x +
+        cuda_camera.dy * pixel_y;
 
-    float3 ray_dir = normalize(pixel_pos -  cuda_camera.eye);
+    float3 ray_dir = normalize(pixel_pos - cuda_camera.eye);
     float ray_refract = 1.0f;
     float3 throughput = make_float3(1.0f, 1.0f, 1.0f);
 
     float3 last_normal = ray_dir; // 初始視為從相機射出
-    float3 last_pos =  cuda_camera.eye;
+    float3 last_pos = cuda_camera.eye;
     float last_pdf_omega = 1.0f; // 相機出射 PDF (簡化假設)
 
     float3 *pixel = &cuda_image[idx];
@@ -309,8 +325,23 @@ __global__ void cuda_eye_trace_and_connect(
     for(int depth = 0; depth < max_depth; depth++){
         CudaEyeVertex &vertex = cuda_eye_vertices[path_base_idx + depth];
 
-        CudaHit hit = find_closest_hit(ray_point, ray_dir, cuda_spheres, num_spheres, cuda_triangles, num_triangles);
+        CudaHit hit = find_closest_hit(ray_point, ray_dir,
+            cuda_spheres, num_spheres,
+            cuda_triangles, num_triangles,
+            cuda_lights, num_lights);
         if(!hit.hit) break;
+        bool is_hit_light = hit.is_light;
+        if(hit.is_light && depth == 0){
+            vertex.pos = hit.pos;
+            vertex.normal = hit.normal;
+            vertex.throughput = throughput;
+            vertex.mtl = hit.mtl;
+            vertex.pdf_fwd = last_pdf_omega; // Placeholder
+            vertex.pdf_rev = 0.0f; // 光源沒有反向 PDF
+            final_color = final_color + hit.mtl.Kd * light_sample;
+            // printf("Hit light source at depth %d, color: (%f, %f, %f)\n", depth, hit.mtl.Kd.x, hit.mtl.Kd.y, hit.mtl.Kd.z);
+            break; // 光源終止
+        }
 
         float dist2_cam = dot(hit.pos - last_pos, hit.pos - last_pos);
         float cos_at_hit = abs(dot(hit.normal, ray_dir * -1.0f));
@@ -322,9 +353,9 @@ __global__ void cuda_eye_trace_and_connect(
         float pdf_rev_omega = cos_at_hit / PI;
         float pdf_rev = pdf_rev_omega * cos_at_prev / safe_dist2;
 
-        vertex.pos =  hit.pos;
-        vertex.normal =  hit.normal;
-        vertex.throughput =  throughput;
+        vertex.pos = hit.pos;
+        vertex.normal = hit.normal;
+        vertex.throughput = throughput;
         vertex.mtl = hit.mtl;
         vertex.pdf_fwd = pdf_fwd; // Placeholder
         vertex.pdf_rev = pdf_rev; // Placeholder
@@ -333,9 +364,9 @@ __global__ void cuda_eye_trace_and_connect(
         float3 total_L = make_float3(0.0f, 0.0f, 0.0f);
         for(int light_idx = 0; light_idx < num_light_vertices; light_idx++){
             CudaLightVertex lv = cuda_light_vertices[light_idx];
-            float3 lv_pos =  lv.pos;
-            float3 lv_normal =  lv.normal;
-            float3 lv_throughput =  lv.throughput;
+            float3 lv_pos = lv.pos;
+            float3 lv_normal = lv.normal;
+            float3 lv_throughput = lv.throughput;
             // if(lv.is_light_source){
             //     float scene_radius = 0.075f;
             //     float3 w = lv_normal;
@@ -354,10 +385,10 @@ __global__ void cuda_eye_trace_and_connect(
 
 
             CudaEyeVertex &ev = vertex;
-            float3 ev_pos =  ev.pos;
-            float3 ev_normal =  ev.normal;
-            float3 ev_throughput =  ev.throughput;
-            float3 ev_kd =  ev.mtl.Kd;
+            float3 ev_pos = ev.pos;
+            float3 ev_normal = ev.normal;
+            float3 ev_throughput = ev.throughput;
+            float3 ev_kd = ev.mtl.Kd;
 
             float3 fE = ev_kd / PI; // Diffuse BRDF
 
@@ -377,7 +408,8 @@ __global__ void cuda_eye_trace_and_connect(
                 int path_idx = light_idx / light_path_depth;
                 int real_light_idx = path_idx % num_lights;
 
-                float3 light_dir = normalize( cuda_lights[real_light_idx].dir);
+
+                float3 light_dir = normalize(cuda_lights[real_light_idx].dir);
                 float cos_theta = dot(light_dir, wi * -1.0f);
                 float cutoff_cos = cosf(lv.source_cutoff);
                 if(cos_theta < cutoff_cos) continue;
@@ -451,7 +483,7 @@ __global__ void cuda_eye_trace_and_connect(
         else{
             ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
             ray_point = hit.pos + ray_dir * EPSILON;
-            throughput = throughput *  hit.mtl.Kd; // Diffuse attenuation
+            throughput = throughput * hit.mtl.Kd; // Diffuse attenuation
 
             last_pdf_omega = cos_at_hit / PI;
             last_normal = hit.normal;
@@ -460,7 +492,7 @@ __global__ void cuda_eye_trace_and_connect(
 
     }
 
-    *pixel =  final_color;
+    *pixel = final_color;
     states[idx] = localState;
 }
 
@@ -570,7 +602,7 @@ void bdpt_render_wrapper(
         d_cuda_eye_vertices, d_states,
         W, H,
         eye_depth,
-        light_depth,
+        light_depth, light_sample,
         d_image
         );
     cudaDeviceSynchronize();

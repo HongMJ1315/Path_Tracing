@@ -51,9 +51,6 @@ void move_data_to_cuda_pt(std::map<int, AABB> groups, std::vector<CudaLight> &li
 
     for(auto l : lights){
         l.dir = normalize_cuda(l.dir);
-        l.illum.x /= (float) light_sample;
-        l.illum.y /= (float) light_sample;
-        l.illum.z /= (float) light_sample;
         pt_ns::cuda_lights.push_back(l);
     }
 

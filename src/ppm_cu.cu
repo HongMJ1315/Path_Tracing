@@ -63,6 +63,7 @@ __global__ void build_hash_grid_kernel(
 // PPM: Stage 1 - Eye Trace (Generate Hit Points)
 // =========================================================================================
 __global__ void ppm_eye_trace(
+    const CudaLight *lights, int num_lights,
     const CudaSphere *spheres, int num_spheres,
     const CudaTriangle *triangles, int num_triangles,
     const CudaCamera cam,
@@ -93,10 +94,16 @@ __global__ void ppm_eye_trace(
     float3 throughput = make_float3(1.0f, 1.0f, 1.0f);
 
     for(int depth = 0; depth < max_depth; depth++){
-        CudaHit hit = find_closest_hit(ray_point, ray_dir, spheres, num_spheres, triangles, num_triangles);
-
+        CudaHit hit = find_closest_hit(ray_point, ray_dir,
+            spheres, num_spheres,
+            triangles, num_triangles,
+            lights, num_lights);
         if(!hit.hit){
             image[idx] = { 0.0f, 0.0f, 0.0f };
+            break;
+        }
+        if(hit.is_light){
+            image[idx] = hit.mtl.Kd; // 直接將光源顏色寫入背景
             break;
         }
 
@@ -230,14 +237,19 @@ __global__ void ppm_photon_trace(
         );
 
         ray_dir = normalize(u * local_dir.x + v * local_dir.y + w * local_dir.z);
+        ray_point = ray_point + ray_dir * light.light_ball.r; // 避免自相交
     }
 
     float3 photon_flux = light.illum * (float) num_lights;
 
 
     for(int depth = 0; depth < max_depth; depth++){
-        CudaHit hit = find_closest_hit(ray_point, ray_dir, spheres, num_spheres, triangles, num_triangles);
+        CudaHit hit = find_closest_hit(ray_point, ray_dir,
+            spheres, num_spheres,
+            triangles, num_triangles,
+            lights, num_lights);
         if(!hit.hit) break;
+        if(hit.is_light) break; // 光源不反射
 
         float do_reflect = curand_uniform(&localState);
         if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
@@ -394,6 +406,7 @@ void ppm_render_wrapper(
 
     // 3. Eye Trace (Generate Hit Points)
     ppm_eye_trace << <(W * H + 255) / 256, 256 >> > (
+        d_lights, num_lights,
         d_spheres, num_spheres, d_triangles, num_triangles,
         cuda_camera, d_hit_points, d_states, W, H, eye_depth, d_image
         );

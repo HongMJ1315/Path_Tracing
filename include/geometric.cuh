@@ -30,6 +30,7 @@ struct CudaHit{
     float t;
     float3 pos, normal;
     CudaMaterial mtl;
+    bool is_light;
 };
 
 struct CudaHitPoint{
@@ -52,6 +53,7 @@ struct CudaRay{ float3 point, dir; };
 
 struct CudaLight{
     float3 pos, dir, illum;
+    CudaSphere light_ball;
     float cutoff;
     int is_parallel;
 };
@@ -182,8 +184,9 @@ __device__ inline float3 check_visibility(
 __device__ inline CudaHit find_closest_hit(
     float3 ray_point, float3 ray_dir,
     const CudaSphere *spheres, int sphere_cnt,
-    const CudaTriangle *triangles, int tri_cnt
-){
+    const CudaTriangle *triangles, int tri_cnt,
+    const CudaLight *lights, int light_cnt
+    ){
     CudaHit best;
     best.hit = false;
     best.t = 1e20f;
@@ -199,6 +202,21 @@ __device__ inline CudaHit find_closest_hit(
                 best.mtl = spheres[i].mtl;
                 best.pos = ray_point + ray_dir * t;
                 best.normal = normalize(best.pos - spheres[i].center);
+                best.is_light = false;
+                if(dot(best.normal, ray_dir) > 0.0f) best.normal = best.normal * -1.0f;
+            }
+        }
+    }
+
+    for(int i = 0; i < light_cnt; ++i){
+        if(intersect_sphere(ray_point, ray_dir, lights[i].light_ball, t, max_dist)){
+            if(t < best.t){
+                best.hit = true;
+                best.t = t;
+                best.mtl.Kd = lights[i].illum;
+                best.pos = ray_point + ray_dir * t;
+                best.normal = normalize(best.pos - lights[i].light_ball.center);
+                best.is_light = true;
                 if(dot(best.normal, ray_dir) > 0.0f) best.normal = best.normal * -1.0f;
             }
         }
@@ -215,6 +233,7 @@ __device__ inline CudaHit find_closest_hit(
                 float3 v1 = triangles[i].v1;
                 float3 v2 = triangles[i].v2;
                 best.normal = normalize(cross(v1 - v0, v2 - v0));
+                best.is_light = false;
                 if(dot(best.normal, ray_dir) > 0.0f) best.normal = best.normal * -1.0f;
             }
         }

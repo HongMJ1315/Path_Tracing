@@ -31,6 +31,8 @@ __global__ void cuda_path_trace_kernel(
     int px = idx % W; int py = idx / W;
     curandState localState = states[idx];
 
+
+    float3 final_color = make_float3(0.0f, 0.0f, 0.0f);
     // Ray Generation
     float pixel_x = (float) px + curand_uniform(&localState);
     float pixel_y = (float) py + curand_uniform(&localState);
@@ -39,87 +41,65 @@ __global__ void cuda_path_trace_kernel(
     float3 ray_dir = normalize(pixel_pos - ray_point);
     float ray_refract = 1.0f;
     float3 throughput = make_float3(1.0f, 1.0f, 1.0f);
-    float3 final_color = make_float3(0.0f, 0.0f, 0.0f);
+    for(int depth = 0; depth < max_depth; ++depth){
+        CudaHit hit = find_closest_hit(ray_point, ray_dir,
+            d_spheres, num_spheres,
+            d_triangles, num_triangles,
+            d_lights, num_lights);
+        if(!hit.hit) break;
+        if(hit.is_light){
+            final_color = final_color + throughput * hit.mtl.Kd;
+            break;
+        }
+        float do_reflect = curand_uniform(&localState);
+        if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
+            ray_point = hit.pos + hit.normal * EPSILON;
+            ray_dir = reflect(ray_dir, hit.normal);
+            depth--;
+            continue;
+        }
+        if(hit.mtl.refract > 0.0f){
+            float3 refracted_dir;
+            float3 I = ray_dir, N = hit.normal;
+            float n1 = ray_refract;
+            float n2 = hit.mtl.refract;
 
-    for(int i = 0; i < num_lights; ++i){
-        for(int depth = 0; depth < max_depth; ++depth){
-            CudaHit hit = find_closest_hit(ray_point, ray_dir, d_spheres, num_spheres, d_triangles, num_triangles);
-
-            if(!hit.hit) break;
-
-            const CudaLight &light = d_lights[i];
-
-            float3 light_pos = light.pos;
-            float3 illum = light.illum;
-
-            float do_reflect = curand_uniform(&localState);
-            if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
-                ray_point = hit.pos + hit.normal * EPSILON;
-                ray_dir = reflect(ray_dir, hit.normal);
-                depth--;
-                continue;
+            float cosNI = dot(I, N);
+            if(cosNI > 0.0f){
+                swap(n1, n2);
+                N = N * -1.0f;
+                cosNI = dot(I, N);
             }
-            if(hit.mtl.refract > 0.0f){
-                float3 refracted_dir;
-                float3 I = ray_dir, N = hit.normal;
-                float n1 = ray_refract;
-                float n2 = hit.mtl.refract;
-
-                float cosNI = dot(I, N);
-                if(cosNI > 0.0f){
-                    swap(n1, n2);
-                    N = N * -1.0f;
-                    cosNI = dot(I, N);
-                }
-                float eta = n1 / n2;
-                refracted_dir = refract(I, N, eta);
-                if(length(refracted_dir) > 0.0f){
-                    ray_point = hit.pos - hit.normal * EPSILON;
-                    ray_dir = refracted_dir;
-                    ray_refract = hit.mtl.refract;
-                }
-                else{
-                    ray_point = hit.pos + hit.normal * EPSILON;
-                    ray_dir = reflect(ray_dir, hit.normal);
-                }
-                depth--;
-                continue;
-            }
-            float do_glossy = curand_uniform(&localState);
-            if(do_glossy < hit.mtl.glossy){
-                float3 perfect_reflect = reflect(ray_dir, hit.normal);
-                float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.0005f + .001f);
-                float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
-                ray_dir = normalize(perfect_reflect + jitter);
-                if(dot(ray_dir, hit.normal) < 0.0f){
-                    ray_dir = ray_dir - hit.normal * dot(ray_dir, hit.normal) * 2.0f;
-                    ray_dir = normalize(ray_dir);
-                }
-                ray_point = hit.pos + ray_dir * EPSILON;
+            float eta = n1 / n2;
+            refracted_dir = refract(I, N, eta);
+            if(length(refracted_dir) > 0.0f){
+                ray_point = hit.pos - hit.normal * EPSILON;
+                ray_dir = refracted_dir;
+                ray_refract = hit.mtl.refract;
             }
             else{
-
-                float3 shadow_ray_dir = light_pos - hit.pos;
-                float dist_to_light = length(shadow_ray_dir);
-                shadow_ray_dir = normalize(shadow_ray_dir);
-
-                CudaRay shadow_ray;
-                shadow_ray.point = hit.pos + hit.normal * EPSILON;
-                shadow_ray.dir = shadow_ray_dir;
-
-                float3 transmission = check_visibility(shadow_ray.point, light_pos, d_spheres, num_spheres, d_triangles, num_triangles);
-                float cos_theta = dot(hit.normal, shadow_ray_dir);
-
-                float dist_sq = max(dist_to_light * dist_to_light, 1e-4f);
-                
-                float3 brdf = hit.mtl.Kd / PI;
-
-                final_color = final_color + throughput * brdf * illum * cos_theta * transmission * (float) num_lights / dist_sq;
-
-                ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
-                ray_point = hit.pos + ray_dir * EPSILON;
-                throughput = throughput * hit.mtl.Kd; // Diffuse attenuation
+                ray_point = hit.pos + hit.normal * EPSILON;
+                ray_dir = reflect(ray_dir, hit.normal);
             }
+            depth--;
+            continue;
+        }
+        float do_glossy = curand_uniform(&localState);
+        if(do_glossy < hit.mtl.glossy){
+            float3 perfect_reflect = reflect(ray_dir, hit.normal);
+            float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.0005f + .001f);
+            float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
+            ray_dir = normalize(perfect_reflect + jitter);
+            if(dot(ray_dir, hit.normal) < 0.0f){
+                ray_dir = ray_dir - hit.normal * dot(ray_dir, hit.normal) * 2.0f;
+                ray_dir = normalize(ray_dir);
+            }
+            ray_point = hit.pos + ray_dir * EPSILON;
+        }
+        else{
+            ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
+            ray_point = hit.pos + ray_dir * EPSILON;
+            throughput = throughput * hit.mtl.Kd; // Diffuse attenuation
         }
     }
 
@@ -166,7 +146,6 @@ void pt_render_wrapper(
         d_lights, num_lights, d_spheres, num_spheres, d_triangles, num_triangles,
         cuda_camera, d_states, W, H, eye_depth, d_image
         );
-
     cudaDeviceSynchronize();
 
     // 4. 回傳數據
