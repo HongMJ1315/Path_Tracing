@@ -16,7 +16,7 @@ __global__ void pt_init_rng(curandState *states, unsigned long long seed, int to
 
 
 /*--------------------------
-傳統 Path Tracing Kernel (含 NEE)
+傳統 Path Tracing Kernel
 --------------------------*/
 __global__ void cuda_path_trace_kernel(
     const CudaLight *d_lights, int num_lights,
@@ -41,6 +41,11 @@ __global__ void cuda_path_trace_kernel(
     float3 ray_dir = normalize(pixel_pos - ray_point);
     float ray_refract = 1.0f;
     float3 throughput = make_float3(1.0f, 1.0f, 1.0f);
+
+    // [新增] 紀錄前一次 bounce 是否為 Specular (鏡面或折射)
+        // 初始設為 true，確保相機直視光源時能看見光源本身的亮度
+    bool last_specular = true;
+
     for(int depth = 0; depth < max_depth; ++depth){
         CudaHit hit = find_closest_hit(ray_point, ray_dir,
             d_spheres, num_spheres,
@@ -48,7 +53,9 @@ __global__ void cuda_path_trace_kernel(
             d_lights, num_lights);
         if(!hit.hit) break;
         if(hit.is_light){
-            final_color = final_color + throughput * hit.mtl.Kd;
+            if(last_specular){
+                final_color = final_color + throughput * hit.mtl.Kd;
+            }
             break;
         }
         float do_reflect = curand_uniform(&localState);
@@ -56,6 +63,7 @@ __global__ void cuda_path_trace_kernel(
             ray_point = hit.pos + hit.normal * EPSILON;
             ray_dir = reflect(ray_dir, hit.normal);
             depth--;
+            last_specular = true;
             continue;
         }
         if(hit.mtl.refract > 0.0f){
@@ -82,6 +90,7 @@ __global__ void cuda_path_trace_kernel(
                 ray_dir = reflect(ray_dir, hit.normal);
             }
             depth--;
+            last_specular = true;
             continue;
         }
         float do_glossy = curand_uniform(&localState);
@@ -97,9 +106,67 @@ __global__ void cuda_path_trace_kernel(
             ray_point = hit.pos + ray_dir * EPSILON;
         }
         else{
+            // ==========================================
+            // Next Event Estimation
+            // ==========================================
+            if(num_lights > 0){
+                int l_idx = min((int) (curand_uniform(&localState) * num_lights), num_lights - 1);
+                CudaLight light = d_lights[l_idx];
+
+                float3 light_dir;
+                float light_dist;
+                float3 light_color = light.illum;
+                bool valid_light = true;
+
+                if(light.is_parallel){
+                    light_dir = normalize(light.dir * -1.0f);
+                    light_dist = 1e9f;
+                }
+                else{
+                    float3 light_pos = light.pos + random_in_unit_sphere_device(&localState) * light.light_ball.r; // 採樣光球表面 
+
+                    float3 d_vec = light_pos - hit.pos;
+                    float dist2 = dot(d_vec, d_vec);
+                    light_dist = sqrtf(dist2);
+                    light_dir = d_vec / light_dist;
+
+                    light_color = light_color / fmaxf(dist2, 0.0001f);
+
+                    if(light.cutoff > 0.0f){
+                        float cos_l = dot(normalize(light.dir), light_dir * -1.0f);
+                        if(cos_l < cosf(light.cutoff)) valid_light = false;
+                    }
+                }
+
+                float cos_theta = dot(hit.normal, light_dir);
+
+                if(valid_light && cos_theta > 0.0f){
+                    float3 shadow_origin = hit.pos + hit.normal * EPSILON;
+                    CudaHit shadow_hit = find_closest_hit(shadow_origin, light_dir,
+                        d_spheres, num_spheres,
+                        d_triangles, num_triangles,
+                        d_lights, num_lights);
+
+                    bool in_shadow = false;
+                    if(shadow_hit.hit){
+                        float s_dist = length(shadow_hit.pos - shadow_origin);
+                        if(s_dist < light_dist - 0.01f && !shadow_hit.is_light){
+                            in_shadow = true;
+                        }
+                    }
+
+                    if(!in_shadow){
+                        float3 brdf = hit.mtl.Kd / 3.14159265359f;
+                        final_color = final_color + throughput * brdf * light_color * cos_theta * (float) num_lights;
+                    }
+                }
+            }
+
             ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
             ray_point = hit.pos + ray_dir * EPSILON;
-            throughput = throughput * hit.mtl.Kd; // Diffuse attenuation
+            throughput = throughput * hit.mtl.Kd;
+
+            last_specular = false;
         }
     }
 

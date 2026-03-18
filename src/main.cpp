@@ -490,9 +490,13 @@ int main(int argc, char **argv){
                     // framebuffer[combined_frame_idx + 1] = (unsigned char) ((int) (current_ppm[image_idx + 1] + (int) current_bdpt[image_idx + 1]) / 2.f);
                     // framebuffer[combined_frame_idx + 2] = (unsigned char) ((int) (current_ppm[image_idx + 2] + (int) current_bdpt[image_idx + 2]) / 2.f);
 
-                    framebuffer[combined_frame_idx + 0] = (unsigned char) ((pt_buffer[image_idx + 0] / (float) render_conut) * 255.f);
-                    framebuffer[combined_frame_idx + 1] = (unsigned char) ((pt_buffer[image_idx + 1] / (float) render_conut) * 255.f);
-                    framebuffer[combined_frame_idx + 2] = (unsigned char) ((pt_buffer[image_idx + 2] / (float) render_conut) * 255.f);
+                    current_pt[image_idx + 0] = (unsigned char) ((pt_buffer[image_idx + 0] / (float) render_conut) * 255.f);
+                    current_pt[image_idx + 1] = (unsigned char) ((pt_buffer[image_idx + 1] / (float) render_conut) * 255.f);
+                    current_pt[image_idx + 2] = (unsigned char) ((pt_buffer[image_idx + 2] / (float) render_conut) * 255.f);
+
+                    framebuffer[combined_frame_idx + 0] = current_pt[image_idx + 0];
+                    framebuffer[combined_frame_idx + 1] = current_pt[image_idx + 1];
+                    framebuffer[combined_frame_idx + 2] = current_pt[image_idx + 2];
 
                     if(!is_first){
                         for(int k = 0; k < 3; k++){
@@ -539,16 +543,17 @@ int main(int argc, char **argv){
             }
             fprintf(rms_gp, "e\n");
 
+            for(int i = 0; i < (int) pt_rms_history.size(); ++i){
+                fprintf(rms_gp, "%d %f\n", i, pt_rms_history[i]);
+            }
+            fprintf(rms_gp, "e\n");
+
             // 第三組：PPM與BDPT的差異
             for(int i = 0; i < (int) diff_rms_history.size(); ++i){
                 fprintf(rms_gp, "%d %f\n", i, diff_rms_history[i]);
             }
             fprintf(rms_gp, "e\n");
 
-            for(int i = 0; i < (int) pt_rms_history.size(); ++i){
-                fprintf(rms_gp, "%d %f\n", i, pt_rms_history[i]);
-            }
-            fprintf(rms_gp, "e\n");
 
             fflush(rms_gp);
 
