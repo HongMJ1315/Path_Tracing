@@ -7,6 +7,7 @@ struct CudaLightVertex{
     float3 pos;
     float3 normal;
     float3 throughput;
+    CudaMaterial_Old mtl_old;
     CudaMaterial mtl;
     bool is_light_source;
     bool is_parallel;
@@ -19,6 +20,7 @@ struct CudaEyeVertex{
     float3 pos;
     float3 normal;
     float3 throughput;
+    CudaMaterial_Old mtl_old;
     CudaMaterial mtl;
     float pdf_fwd;
     float pdf_rev;

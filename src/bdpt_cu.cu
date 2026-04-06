@@ -13,9 +13,9 @@ __global__ void bdpt_init_rng(curandState *states, unsigned long long seed, int 
 Light Tracing Kernel
 --------------------------*/
 __global__ void cuda_light_trace(
-    const CudaLight *cuda_lights, int num_lights,
-    const CudaSphere *cuda_spheres, int num_spheres,
-    const CudaTriangle *cuda_triangles, int num_triangles,
+    const CudaLight *d_lights, int num_lights,
+    const CudaSphere *d_spheres, int num_spheres,
+    const CudaTriangle *d_triangles, int num_triangles,
     const float3 min_bound, const float3 max_bound,
     CudaLightVertex *cuda_light_vertices,
     curandState *states,
@@ -25,23 +25,25 @@ __global__ void cuda_light_trace(
     if(idx >= total_paths) return;
 
     int light_idx = idx % num_lights;
-    CudaLight light = cuda_lights[light_idx];
+    CudaLight light = d_lights[light_idx];
 
 
     int path_base_idx = idx * max_depth;
 
-    float3 ray_point, ray_dir;
+    float3 lightray_point, lightray_dir;
     float ray_refract = 1.0f;
+
+
     curandState localState = states[idx];
 
     if(light.is_parallel){
-        ray_dir = normalize(light.dir);
+        lightray_dir = normalize(light.dir);
 
         float3 scene_center = (min_bound) +max_bound * 0.5f;
         float3 diag = max_bound - min_bound;
         float scene_radius = length(diag) * 0.5f;
 
-        float3 w = ray_dir;
+        float3 w = lightray_dir;
         float3 u, v;
 
         if(fabs(w.x) > 0.9f) u = make_float3(0.0f, 1.0f, 0.0f);
@@ -57,10 +59,10 @@ __global__ void cuda_light_trace(
         float offset_u = (r1 - 0.5f) * plane_size;
         float offset_v = (r2 - 0.5f) * plane_size;
 
-        ray_point = scene_center - ray_dir * (scene_radius * 2.0f) + u * offset_u + v * offset_v;
+        lightray_point = scene_center - lightray_dir * (scene_radius * 2.0f) + u * offset_u + v * offset_v;
     }
     else{
-        ray_point = light.pos;
+        lightray_point = light.pos;
 
         float3 w = normalize(light.dir);
         float3 u, v;
@@ -82,129 +84,125 @@ __global__ void cuda_light_trace(
             cosf(theta)
         );
 
-        ray_dir = normalize(u * local_dir.x + v * local_dir.y + w * local_dir.z);
-        ray_point = ray_point + ray_dir * light.light_ball.r; // 避免自相交
+        lightray_dir = normalize(u * local_dir.x + v * local_dir.y + w * local_dir.z);
+        lightray_point = lightray_point + lightray_dir * light.light_ball.r; // 避免自相交
     }
 
     float3 throughput = light.illum;
 
     CudaLightVertex &vertex0 = cuda_light_vertices[path_base_idx];
-    vertex0.pos = ray_point;
-    vertex0.normal = ray_dir;
+    vertex0.pos = lightray_point;
+    vertex0.normal = lightray_dir;
     vertex0.throughput = throughput;
     vertex0.is_light_source = true;
     vertex0.source_cutoff = light.cutoff;
     vertex0.is_parallel = light.is_parallel;
 
-    float3 last_normal = ray_dir;
-    float3 last_pos = ray_point;
+    float3 last_normal = lightray_dir;
+    float3 last_pos = lightray_point;
     float last_pdf_omega = 1.0f / PI;
+
+    float3 wo = lightray_dir * -1.0f;
+    float3 wi;
+    float3 bsdf_val;
+    float pdf_omega;
+    bool is_delta;
 
 
     for(int depth = 1; depth < max_depth; depth++){
         CudaLightVertex &vertex = cuda_light_vertices[path_base_idx + depth];
 
-        CudaHit hit = find_closest_hit(ray_point, ray_dir,
-            cuda_spheres, num_spheres,
-            cuda_triangles, num_triangles,
-            cuda_lights, num_lights);
+        CudaHit hit = find_closest_hit(lightray_point, lightray_dir,
+            d_spheres, num_spheres,
+            d_triangles, num_triangles,
+            d_lights, num_lights);
         if(!hit.hit) break;
         if(hit.is_light){
             vertex.pos = hit.pos;
             vertex.normal = hit.normal;
             vertex.throughput = throughput;
+            vertex.mtl_old = hit.mtl_old;
             vertex.mtl = hit.mtl;
             vertex.is_light_source = true;
-            vertex.source_cutoff = 0.0f; // 不再使用 cutoff
-            vertex.is_parallel = false; // 不再使用 parallel
+            vertex.source_cutoff = 0.0f;
+            vertex.is_parallel = false;
 
-            break; // 光源終止
+            break;
         }
         if(length(throughput) < 1e-4f) break;
 
         float dist2 = dot(hit.pos - last_pos, hit.pos - last_pos);
-        float dist = sqrtf(dist2);
         if(dist2 < 1e-6f) break;
 
-        float cos_at_hit = abs(dot(hit.normal, ray_dir * -1.0f));
-        float cos_at_prev = abs(dot(last_normal, ray_dir));
+        float cos_at_hit = fabs(dot(hit.normal, lightray_dir * -1.0f));
+        float cos_at_prev = fabs(dot(last_normal, lightray_dir));
 
         float pdf_fwd = last_pdf_omega * cos_at_hit / dist2;
-        float pdf_rev_omega = cos_at_hit / PI;
-        float pdf_rev = pdf_rev_omega * cos_at_prev / dist2;
 
-        float do_reflect = curand_uniform(&localState);
-        if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
-            ray_point = hit.pos + hit.normal * EPSILON;
-            ray_dir = reflect(ray_dir, hit.normal);
-            depth--;
-            continue;
-        }
-        if(hit.mtl.refract > 0.0f){
-            float3 refracted_dir;
-            float3 I = ray_dir, N = hit.normal;
-            float n1 = ray_refract;
-            float n2 = hit.mtl.refract;
 
-            float cosNI = dot(I, N);
-            if(cosNI > 0.0f){
-                swap(n1, n2);
-                N = N * -1.0f;
-                cosNI = dot(I, N);
-            }
-            float eta = n1 / n2;
-            refracted_dir = refract(I, N, eta);
-            if(length(refracted_dir) > 0.0f){
-                ray_point = hit.pos - hit.normal * EPSILON;
-                ray_dir = refracted_dir;
-                ray_refract = hit.mtl.refract;
+        float3 wo = lightray_dir * -1.0f;
+        float3 wi;
+        float3 bsdf_val;
+        float pdf_omega;
+        bool is_delta;
+        float new_ior;
+
+        bsdf_sample(hit.mtl, wo, hit.normal, &localState, ray_refract,
+            wi, bsdf_val, pdf_omega, is_delta, new_ior);
+
+        if(pdf_omega <= 0.0f && !is_delta) break;
+
+
+        if(is_delta){
+            throughput = throughput * bsdf_val;
+            lightray_dir = wi;
+            ray_refract = new_ior;
+
+            if(dot(wi, hit.normal) < 0.0f){
+                lightray_point = hit.pos - hit.normal * EPSILON;
             }
             else{
-                ray_point = hit.pos + hit.normal * EPSILON;
-                ray_dir = reflect(ray_dir, hit.normal);
+                lightray_point = hit.pos + hit.normal * EPSILON;
             }
+
             depth--;
             continue;
         }
-        float do_glossy = curand_uniform(&localState);
-        if(do_glossy < hit.mtl.glossy){
-            float3 perfect_reflect = reflect(ray_dir, hit.normal);
-            float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.0005f + .001f);
-            float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
-            ray_dir = normalize(perfect_reflect + jitter);
-            if(dot(ray_dir, hit.normal) < 0.0f){
-                ray_dir = ray_dir - hit.normal * dot(ray_dir, hit.normal) * 2.0f;
-                ray_dir = normalize(ray_dir);
-            }
-            ray_point = hit.pos + ray_dir * EPSILON;
-        }
-        else{
-            ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
-            ray_point = hit.pos + ray_dir * EPSILON;
-            throughput = throughput * hit.mtl.Kd; // Diffuse attenuation
 
-            vertex.pos = hit.pos;
-            vertex.normal = hit.normal;
-            vertex.throughput = throughput;
-            vertex.mtl = hit.mtl;
-            vertex.is_light_source = false;
-            vertex.pdf_fwd = pdf_fwd;
-            vertex.pdf_rev = pdf_rev;
 
-            last_pdf_omega = pdf_rev_omega;
-            last_normal = hit.normal;
-            last_pos = hit.pos;
-        }
+        vertex.pos = hit.pos;
+        vertex.normal = hit.normal;
+        vertex.throughput = throughput;
+        vertex.mtl_old = hit.mtl_old;
+        vertex.mtl = hit.mtl;
+        vertex.is_light_source = false;
+
+        float pdf_rev_omega = bsdf_pdf(hit.mtl, wi, wo, hit.normal);
+        float pdf_rev = pdf_rev_omega * cos_at_prev / dist2; // 轉為 Area Measure
+
+        vertex.pdf_fwd = pdf_fwd;
+        vertex.pdf_rev = pdf_rev;
+
+        float cos_wi = fabs(dot(hit.normal, wi));
+        throughput = throughput * bsdf_val * cos_wi / pdf_omega;
+
+        lightray_dir = wi;
+        lightray_point = hit.pos + hit.normal * EPSILON;
+
+        last_pdf_omega = pdf_omega;
+        last_normal = hit.normal;
+        last_pos = hit.pos;
+
     }
     states[idx] = localState;
 }
 
 
-// [Code Block: CUDA BDPT MIS Implementation]
 __device__ float calculate_mis_weight(
     const CudaEyeVertex *eye_path, int s_idx,
     const CudaLightVertex *light_path, int t_idx,
-    const float3 &dir_e_to_l, float dist2){
+    const float3 &dir_e_to_l, float dist2,
+    const CudaCamera &camera){
     if(s_idx < 0 || t_idx < 0) return 0.0f;
 
     const CudaEyeVertex &ev = eye_path[s_idx];
@@ -218,24 +216,32 @@ __device__ float calculate_mis_weight(
 
     if(cos_s <= 0.0f || cos_t <= 0.0f || dist2 < 1e-6f) return 0.0f;
 
-    // 1. 計算連接段 (Connection Segment) 的互相轉換 PDF (Area Measure)
-    float pdf_omega_s = cos_s / 3.14159265359f; // 假設純 Diffuse
-    float pdf_omega_t = cos_t / 3.14159265359f; // 假設純 Diffuse
+    float3 wo_s;
+    if(s_idx == 0) wo_s = normalize(camera.eye - ev.pos);
+    else wo_s = normalize(eye_path[s_idx - 1].pos - ev.pos);
 
-    float pdf_s_to_t = pdf_omega_s * cos_t / dist2; // s 射向 t 的 Area PDF
-    float pdf_t_to_s = pdf_omega_t * cos_s / dist2; // t 射向 s 的 Area PDF
+    float3 wo_t;
+    if(t_idx == 0) wo_t = normalize(lv.normal);
+    else wo_t = normalize(light_path[t_idx - 1].pos - lv.pos);
 
-    float sum_ratios = 1.0f; // 包含當前策略 (s,t) 自己的比值 = 1.0
+    float pdf_omega_s = bsdf_pdf(ev.mtl, wo_s, dir_e_to_l, ns);
+    float pdf_omega_t = bsdf_pdf(lv.mtl, wo_t, dir_e_to_l * -1.0f, nt);
 
-    // 2. 往 Eye Path 方向展開 (評估 s-1, t+1 等策略)
+    pdf_omega_s = fmaxf(pdf_omega_s, 1e-6f);
+    pdf_omega_t = fmaxf(pdf_omega_t, 1e-6f);
+
+    float pdf_s_to_t = pdf_omega_s * cos_t / dist2;
+    float pdf_t_to_s = pdf_omega_t * cos_s / dist2;
+    float sum_ratios = 1.0f;
+
     float current_ratio = 1.0f;
-    float prev_pdf_rev = pdf_t_to_s; // 假想一束光從 t 打到 s
+    float prev_pdf_rev = pdf_t_to_s;
 
     for(int i = s_idx; i > 0; --i){
         const CudaEyeVertex &curr_e = eye_path[i];
         const CudaEyeVertex &prev_e = eye_path[i - 1];
 
-        if(curr_e.mtl.reflect > 0.0f || curr_e.mtl.refract > 0.0f){
+        if(curr_e.mtl.ior > 0.0f || curr_e.mtl.ior > 0.0f){
             break;
         }
 
@@ -246,7 +252,7 @@ __device__ float calculate_mis_weight(
     }
 
     current_ratio = 1.0f;
-    prev_pdf_rev = pdf_s_to_t; // 假想視線從 s 打到 t
+    prev_pdf_rev = pdf_s_to_t; 
 
     for(int i = t_idx; i > 0; --i){
         const CudaLightVertex &curr_l = light_path[i];
@@ -257,7 +263,7 @@ __device__ float calculate_mis_weight(
             break;
         }
 
-        if(curr_l.mtl.reflect > 0.0f || curr_l.mtl.refract > 0.0f){
+        if(curr_l.mtl.ior > 0.0f || curr_l.mtl.ior > 0.0f){
             break;
         }
 
@@ -278,9 +284,9 @@ __device__ float calculate_mis_weight(
 Eye Trace Kernel (Fixed Logic)
 --------------------------*/
 __global__ void cuda_eye_trace_and_connect(
-    const CudaLight *cuda_lights, int num_lights,
-    const CudaSphere *cuda_spheres, int num_spheres,
-    const CudaTriangle *cuda_triangles, int num_triangles,
+    const CudaLight *d_lights, int num_lights,
+    const CudaSphere *d_spheres, int num_spheres,
+    const CudaTriangle *d_triangles, int num_triangles,
     const float3 min_bound, const float3 max_bound,
     const CudaCamera cuda_camera,
     CudaLightVertex *cuda_light_vertices, int num_light_vertices,
@@ -303,19 +309,20 @@ __global__ void cuda_eye_trace_and_connect(
     float pixel_x = (float) px + curand_uniform(&localState);
     float pixel_y = (float) py + curand_uniform(&localState);
 
-    float3 ray_point = cuda_camera.eye;
+    float3 eyeray_point = cuda_camera.eye;
 
     float3 pixel_pos = cuda_camera.UL +
         cuda_camera.dx * pixel_x +
         cuda_camera.dy * pixel_y;
 
-    float3 ray_dir = normalize(pixel_pos - cuda_camera.eye);
-    float ray_refract = 1.0f;
+    float3 eyeray_dir = normalize(pixel_pos - cuda_camera.eye);
+    float eyeray_refract = 1.0f;
     float3 throughput = make_float3(1.0f, 1.0f, 1.0f);
 
-    float3 last_normal = ray_dir; // 初始視為從相機射出
+    float3 last_normal = eyeray_dir;
     float3 last_pos = cuda_camera.eye;
-    float last_pdf_omega = 1.0f; // 相機出射 PDF (簡化假設)
+    float last_pdf_omega = 1.0f; 
+    float last_roughness = 1.0f; 
 
     float3 *pixel = &cuda_image[idx];
 
@@ -325,171 +332,182 @@ __global__ void cuda_eye_trace_and_connect(
     for(int depth = 0; depth < max_depth; depth++){
         CudaEyeVertex &vertex = cuda_eye_vertices[path_base_idx + depth];
 
-        CudaHit hit = find_closest_hit(ray_point, ray_dir,
-            cuda_spheres, num_spheres,
-            cuda_triangles, num_triangles,
-            cuda_lights, num_lights);
+        CudaHit hit = find_closest_hit(eyeray_point, eyeray_dir,
+            d_spheres, num_spheres,
+            d_triangles, num_triangles,
+            d_lights, num_lights);
         if(!hit.hit) break;
         bool is_hit_light = hit.is_light;
         if(hit.is_light && depth == 0){
             vertex.pos = hit.pos;
             vertex.normal = hit.normal;
             vertex.throughput = throughput;
+            vertex.mtl_old = hit.mtl_old;
             vertex.mtl = hit.mtl;
-            vertex.pdf_fwd = last_pdf_omega; // Placeholder
-            vertex.pdf_rev = 0.0f; // 光源沒有反向 PDF
-            final_color = final_color + hit.mtl.Kd * light_sample;
-            // printf("Hit light source at depth %d, color: (%f, %f, %f)\n", depth, hit.mtl.Kd.x, hit.mtl.Kd.y, hit.mtl.Kd.z);
-            break; // 光源終止
+            vertex.pdf_fwd = last_pdf_omega;
+            vertex.pdf_rev = 0.0f;
+
+            final_color = final_color + hit.mtl.base_color * light_sample;
+            break;
         }
 
-        float dist2_cam = dot(hit.pos - last_pos, hit.pos - last_pos);
-        float cos_at_hit = abs(dot(hit.normal, ray_dir * -1.0f));
-        float cos_at_prev = abs(dot(last_normal, ray_dir));
+        float pdf_fwd = 1.0f;
+        if(depth > 0){
+            float dist2 = dot(hit.pos - last_pos, hit.pos - last_pos);
+            float cos_at_hit = fabs(dot(hit.normal, eyeray_dir * -1.0f));
+            pdf_fwd = last_pdf_omega * cos_at_hit / fmaxf(dist2, 1e-6f);
+        }
 
-        float safe_dist2 = fmaxf(dist2_cam, 1e-6f);
-
-        float pdf_fwd = last_pdf_omega * cos_at_hit / safe_dist2;
-        float pdf_rev_omega = cos_at_hit / PI;
-        float pdf_rev = pdf_rev_omega * cos_at_prev / safe_dist2;
 
         vertex.pos = hit.pos;
         vertex.normal = hit.normal;
         vertex.throughput = throughput;
+        vertex.mtl_old = hit.mtl_old;
         vertex.mtl = hit.mtl;
-        vertex.pdf_fwd = pdf_fwd; // Placeholder
-        vertex.pdf_rev = pdf_rev; // Placeholder
+        vertex.pdf_fwd = 0.0f; // Placeholder
+        vertex.pdf_rev = 1.0f; // Placeholder
+
+
+
 
         // Connect to Light Vertices
         float3 total_L = make_float3(0.0f, 0.0f, 0.0f);
         for(int light_idx = 0; light_idx < num_light_vertices; light_idx++){
-            CudaLightVertex lv = cuda_light_vertices[light_idx];
+            CudaLightVertex &lv = cuda_light_vertices[light_idx];
             float3 lv_pos = lv.pos;
             float3 lv_normal = lv.normal;
             float3 lv_throughput = lv.throughput;
-            // if(lv.is_light_source){
-            //     float scene_radius = 0.075f;
-            //     float3 w = lv_normal;
-            //     float3 u, v;
-            //     if(fabs(w.x) > 0.9f) u = make_float3(0.0f, 1.0f, 0.0f);
-            //     else u = make_float3(1.0f, 0.0f, 0.0f);
-            //     v = normalize(cross(w, u));
-            //     u = normalize(cross(v, w));
-            //     float r1 = curand_uniform(&localState);
-            //     float r2 = curand_uniform(&localState);
-            //     float plane_size = scene_radius * 2.0f;
-            //     float offset_u = (r1 - 0.5f) * plane_size;
-            //     float offset_v = (r2 - 0.5f) * plane_size;
-            //     lv_pos = lv_pos + u * offset_u + v * offset_v;
-            // }
-
 
             CudaEyeVertex &ev = vertex;
             float3 ev_pos = ev.pos;
             float3 ev_normal = ev.normal;
             float3 ev_throughput = ev.throughput;
-            float3 ev_kd = ev.mtl.Kd;
-
-            float3 fE = ev_kd / PI; // Diffuse BRDF
 
             float3 d_vec = lv_pos - ev_pos;
             float dist2 = dot(d_vec, d_vec);
             if(dist2 < 1e-6f) continue;
 
             float dist = sqrtf(dist2);
-            float3 wi = d_vec / dist;
+            float3 wi = d_vec / dist; // 光線從 Eye 指向 Light 的方向
 
             float cosE = fmaxf(0.0f, dot(ev_normal, wi));
             float cosL = fmaxf(0.0f, dot(lv_normal, wi * -1.0f));
 
             if(cosE <= 0.0f || cosL <= 0.0f) continue;
+
             if(lv.is_light_source && lv.source_cutoff > 0.0f && !lv.is_parallel){
-                // spot light cutoff test
                 int path_idx = light_idx / light_path_depth;
                 int real_light_idx = path_idx % num_lights;
 
-
-                float3 light_dir = normalize(cuda_lights[real_light_idx].dir);
+                float3 light_dir = normalize(d_lights[real_light_idx].dir);
                 float cos_theta = dot(light_dir, wi * -1.0f);
                 float cutoff_cos = cosf(lv.source_cutoff);
                 if(cos_theta < cutoff_cos) continue;
             }
-            float3 transmittance = check_visibility(ev_pos + ev_normal * EPSILON, lv_pos + lv_normal * EPSILON, cuda_spheres, num_spheres, cuda_triangles, num_triangles);
-            if(transmittance.x <= 0.0f && transmittance.y <= 0.0f && transmittance.z <= 0.0f) transmittance = make_float3(0.0f, 0.0f, 0.0f);
-            float G = (cosE * cosL) / dist2;
 
             CudaEyeVertex *current_eye_path = &cuda_eye_vertices[path_base_idx];
             int path_idx = light_idx / light_path_depth;
             CudaLightVertex *current_light_path = &cuda_light_vertices[path_idx * light_path_depth];
             int current_t_idx = light_idx % light_path_depth;
 
+            float3 wo_e = eyeray_dir * -1.0f;
+            float3 fE = bsdf_evaluate(ev.mtl, wo_e, wi, ev_normal);
+
+            float3 fL = make_float3(1.0f, 1.0f, 1.0f);
+            if(!lv.is_light_source && current_t_idx > 0){
+                float3 prev_lv_pos = current_light_path[current_t_idx - 1].pos;
+                float3 wo_l = normalize(prev_lv_pos - lv_pos);
+
+                fL = bsdf_evaluate(lv.mtl, wo_l, wi * -1.0f, lv_normal);
+            }
+
+            if((fE.x <= 0.0f && fE.y <= 0.0f && fE.z <= 0.0f) ||
+                (fL.x <= 0.0f && fL.y <= 0.0f && fL.z <= 0.0f)){
+                continue;
+            }
+            float3 transmittance = check_visibility(ev_pos + ev_normal * EPSILON, lv_pos + lv_normal * EPSILON, d_spheres, num_spheres, d_triangles, num_triangles);
+            if(transmittance.x <= 0.0f && transmittance.y <= 0.0f && transmittance.z <= 0.0f){
+                continue;
+            }
+
+            float G = (cosE * cosL) / dist2;
+
             float mis_w = calculate_mis_weight(
-                current_eye_path, depth,          // s_idx = 當前 eye depth
-                current_light_path, current_t_idx, // t_idx = 當前 light depth
-                d_vec, dist2
+                current_eye_path, depth,
+                current_light_path, current_t_idx,
+                d_vec, dist2,
+                cuda_camera
             );
 
-            float3 contrib = ev_throughput * fE * G * lv_throughput * transmittance * mis_w;
+            float3 contrib = ev_throughput * fE * G * fL * lv_throughput * transmittance * mis_w;
             total_L = total_L + contrib;
         }
         final_color = final_color + total_L;
 
         // Update Ray for next bounce
-        float do_reflect = curand_uniform(&localState);
-        if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
-            ray_point = hit.pos + hit.normal * EPSILON;
-            ray_dir = reflect(ray_dir, hit.normal);
-            depth--;
-            continue;
-        }
-        if(hit.mtl.refract > 0.0f){
-            float3 refracted_dir;
-            float3 I = ray_dir, N = hit.normal;
-            float n1 = ray_refract;
-            float n2 = hit.mtl.refract;
+        float dist2 = dot(hit.pos - last_pos, hit.pos - last_pos);
+        if(dist2 < 1e-6f) break;
 
-            float cosNI = dot(I, N);
-            if(cosNI > 0.0f){
-                swap(n1, n2);
-                N = N * -1.0f;
-                cosNI = dot(I, N);
-            }
-            float eta = n1 / n2;
-            refracted_dir = refract(I, N, eta);
-            if(length(refracted_dir) > 0.0f){
-                ray_point = hit.pos - hit.normal * EPSILON;
-                ray_dir = refracted_dir;
-                ray_refract = hit.mtl.refract;
-            }
-            else{
-                ray_point = hit.pos + hit.normal * EPSILON;
-                ray_dir = reflect(ray_dir, hit.normal);
-            }
-            depth--;
-            continue;
-        }
-        float do_glossy = curand_uniform(&localState);
-        if(do_glossy < hit.mtl.glossy){
-            float3 perfect_reflect = reflect(ray_dir, hit.normal);
-            float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.0005f + .001f);
-            float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
-            ray_dir = normalize(perfect_reflect + jitter);
-            if(dot(ray_dir, hit.normal) < 0.0f){
-                ray_dir = ray_dir - hit.normal * dot(ray_dir, hit.normal) * 2.0f;
-                ray_dir = normalize(ray_dir);
-            }
-            ray_point = hit.pos + ray_dir * EPSILON;
-        }
-        else{
-            ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
-            ray_point = hit.pos + ray_dir * EPSILON;
-            throughput = throughput * hit.mtl.Kd; // Diffuse attenuation
+        float cos_at_hit = fabs(dot(hit.normal, eyeray_dir * -1.0f));
+        float cos_at_prev = fabs(dot(last_normal, eyeray_dir));
 
-            last_pdf_omega = cos_at_hit / PI;
-            last_normal = hit.normal;
+        pdf_fwd = last_pdf_omega * cos_at_hit / dist2;
+
+
+        float3 wo = eyeray_dir * -1.0f;
+        float3 wi;
+        float3 bsdf_val;
+        float pdf_omega;
+        bool is_delta;
+        float new_ior;
+
+        bsdf_sample(hit.mtl, wo, hit.normal, &localState, eyeray_refract,
+            wi, bsdf_val, pdf_omega, is_delta, new_ior);
+
+        if(pdf_omega <= 0.0f && !is_delta) break;
+
+
+        if(is_delta){
+            throughput = throughput * bsdf_val;
+            eyeray_dir = wi;
+            eyeray_refract = new_ior;
+
+            if(dot(wi, hit.normal) < 0.0f) eyeray_point = hit.pos - hit.normal * EPSILON;
+            else eyeray_point = hit.pos + hit.normal * EPSILON;
+
             last_pos = hit.pos;
+            last_normal = hit.normal;
+            last_pdf_omega = 1.0f;
+            last_roughness = hit.mtl.roughness;
+
+            depth--;
+            continue;
         }
 
+
+        vertex.pos = hit.pos;
+        vertex.normal = hit.normal;
+        vertex.throughput = throughput;
+        vertex.mtl_old = hit.mtl_old;
+        vertex.mtl = hit.mtl;
+
+
+        float pdf_rev_omega = bsdf_pdf(hit.mtl, wi, wo, hit.normal);
+        float pdf_rev = pdf_rev_omega * cos_at_prev / dist2; // 轉為 Area Measure
+
+        vertex.pdf_fwd = pdf_fwd;
+        vertex.pdf_rev = pdf_rev;
+
+        float cos_wi = fabs(dot(hit.normal, wi));
+        throughput = throughput * bsdf_val * cos_wi / pdf_omega;
+
+        eyeray_dir = wi;
+        eyeray_point = hit.pos + hit.normal * EPSILON; // 非透明材質一律向外偏移
+
+        last_pdf_omega = pdf_omega;
+        last_normal = hit.normal;
+        last_pos = hit.pos;
+        last_roughness = hit.mtl.roughness;
     }
 
     *pixel = final_color;

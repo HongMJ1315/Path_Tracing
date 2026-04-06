@@ -21,6 +21,7 @@ void move_data_to_cuda_bdpt(std::map<int, AABB> groups, std::vector<CudaLight> &
                 CudaSphere csph;
                 csph.center = to_cv3(sph->center);
                 csph.r = sph->r;
+                csph.mtl_old = to_cmtl_old(sph->mtl);
                 csph.mtl = to_cmtl(sph->mtl);
                 csph.id = sph->obj_id;
                 bdpt_ns::cuda_spheres.push_back(csph);
@@ -36,7 +37,10 @@ void move_data_to_cuda_bdpt(std::map<int, AABB> groups, std::vector<CudaLight> &
                 ctri.v0 = to_cv3(tri->vert[0]);
                 ctri.v1 = to_cv3(tri->vert[1]);
                 ctri.v2 = to_cv3(tri->vert[2]);
+                ctri.mtl_old = to_cmtl_old(tri->mtl);
                 ctri.mtl = to_cmtl(tri->mtl);
+                // ctri.mtl.roughness = fmaxf(0.001f, 1.0f - ctri.mtl_old.glossy); // 轉換範例
+                // ctri.mtl.metallic = (ctri.mtl_old.reflect > 0.0f) ? 0.9f : 0.0f; // 轉換範例
                 ctri.id = tri->obj_id;
                 bdpt_ns::cuda_triangles.push_back(ctri);
                 bdpt_ns::scene_max_bound.x = std::max({ bdpt_ns::scene_max_bound.x, tri->vert[0].x, tri->vert[1].x, tri->vert[2].x });

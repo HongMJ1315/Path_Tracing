@@ -14,7 +14,6 @@ __global__ void ppm_init_rng(curandState *states, unsigned long long seed, int t
     }
 }
 
-// *** 關鍵修正：加入 atomicAddVec3 實作 ***
 __device__ void atomicAddVec3(float3 *addr, float3 val){
     atomicAdd(&(addr->x), val.x);
     atomicAdd(&(addr->y), val.y);
@@ -63,9 +62,9 @@ __global__ void build_hash_grid_kernel(
 // PPM: Stage 1 - Eye Trace (Generate Hit Points)
 // =========================================================================================
 __global__ void ppm_eye_trace(
-    const CudaLight *lights, int num_lights,
-    const CudaSphere *spheres, int num_spheres,
-    const CudaTriangle *triangles, int num_triangles,
+    const CudaLight *d_lights, int num_lights,
+    const CudaSphere *d_spheres, int num_spheres,
+    const CudaTriangle *d_triangles, int num_triangles,
     const CudaCamera cam,
     CudaHitPoint *hit_points,
     curandState *states,
@@ -87,38 +86,38 @@ __global__ void ppm_eye_trace(
     // Ray Generation
     float pixel_x = (float) px + curand_uniform(&localState);
     float pixel_y = (float) py + curand_uniform(&localState);
-    float3 ray_point = cam.eye;
+    float3 eyeray_point = cam.eye;
     float3 pixel_pos = cam.UL + cam.dx * pixel_x + cam.dy * pixel_y;
-    float3 ray_dir = normalize(pixel_pos - ray_point);
-    float ray_refract = 1.0f;
+    float3 eyeray_dir = normalize(pixel_pos - eyeray_point);
+    float eyeray_refract = 1.0f;
     float3 throughput = make_float3(1.0f, 1.0f, 1.0f);
 
     for(int depth = 0; depth < max_depth; depth++){
-        CudaHit hit = find_closest_hit(ray_point, ray_dir,
-            spheres, num_spheres,
-            triangles, num_triangles,
-            lights, num_lights);
+        CudaHit hit = find_closest_hit(eyeray_point, eyeray_dir,
+            d_spheres, num_spheres,
+            d_triangles, num_triangles,
+            d_lights, num_lights);
         if(!hit.hit){
             image[idx] = { 0.0f, 0.0f, 0.0f };
             break;
         }
         if(hit.is_light){
-            image[idx] = hit.mtl.Kd; // 直接將光源顏色寫入背景
+            image[idx] = hit.mtl_old.Kd; // 直接將光源顏色寫入背景
             break;
         }
 
         float do_reflect = curand_uniform(&localState);
-        if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
-            ray_point = hit.pos + hit.normal * EPSILON;
-            ray_dir = reflect(ray_dir, hit.normal);
+        if(hit.mtl_old.reflect > 0.0f && do_reflect < hit.mtl_old.reflect){
+            eyeray_point = hit.pos + hit.normal * EPSILON;
+            eyeray_dir = reflect(eyeray_dir, hit.normal);
             depth--;
             continue;
         }
-        if(hit.mtl.refract > 0.0f){
+        if(hit.mtl_old.refract > 0.0f){
             float3 refracted_dir;
-            float3 I = ray_dir, N = hit.normal;
-            float n1 = ray_refract;
-            float n2 = hit.mtl.refract;
+            float3 I = eyeray_dir, N = hit.normal;
+            float n1 = eyeray_refract;
+            float n2 = hit.mtl_old.refract;
 
             float cosNI = dot(I, N);
             if(cosNI > 0.0f){
@@ -129,34 +128,34 @@ __global__ void ppm_eye_trace(
             float eta = n1 / n2;
             refracted_dir = refract(I, N, eta);
             if(length(refracted_dir) > 0.0f){
-                ray_point = hit.pos - hit.normal * EPSILON;
-                ray_dir = refracted_dir;
-                ray_refract = hit.mtl.refract;
+                eyeray_point = hit.pos - hit.normal * EPSILON;
+                eyeray_dir = refracted_dir;
+                eyeray_refract = hit.mtl_old.refract;
             }
             else{
-                ray_point = hit.pos + hit.normal * EPSILON;
-                ray_dir = reflect(ray_dir, hit.normal);
+                eyeray_point = hit.pos + hit.normal * EPSILON;
+                eyeray_dir = reflect(eyeray_dir, hit.normal);
             }
             depth--;
             continue;
         }
         float do_glossy = curand_uniform(&localState);
-        if(do_glossy < hit.mtl.glossy){
-            float3 perfect_reflect = reflect(ray_dir, hit.normal);
-            float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.0005f + .001f);
+        if(do_glossy < hit.mtl_old.glossy){
+            float3 perfect_reflect = reflect(eyeray_dir, hit.normal);
+            float roughness = (hit.mtl_old.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl_old.exp * 0.0005f + .001f);
             float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
-            ray_dir = normalize(perfect_reflect + jitter);
-            if(dot(ray_dir, hit.normal) < 0.0f){
-                ray_dir = ray_dir - hit.normal * dot(ray_dir, hit.normal) * 2.0f;
-                ray_dir = normalize(ray_dir);
+            eyeray_dir = normalize(perfect_reflect + jitter);
+            if(dot(eyeray_dir, hit.normal) < 0.0f){
+                eyeray_dir = eyeray_dir - hit.normal * dot(eyeray_dir, hit.normal) * 2.0f;
+                eyeray_dir = normalize(eyeray_dir);
             }
-            ray_point = hit.pos + ray_dir * EPSILON;
+            eyeray_point = hit.pos + eyeray_dir * EPSILON;
         }
         else{
             hit_points[idx].valid = true;
             hit_points[idx].pos = hit.pos;
             hit_points[idx].normal = hit.normal;
-            hit_points[idx].mtl = hit.mtl;
+            hit_points[idx].mtl_old = hit.mtl_old;
             hit_points[idx].throughput = throughput;
             image[idx] = { 0.0f, 0.0f, 0.0f };
             break;
@@ -169,9 +168,9 @@ __global__ void ppm_eye_trace(
 // PPM: Stage 2 - Photon Trace (Scatter & Gather)
 // =========================================================================================
 __global__ void ppm_photon_trace(
-    const CudaLight *lights, int num_lights,
-    const CudaSphere *spheres, int num_spheres,
-    const CudaTriangle *triangles, int num_triangles,
+    const CudaLight *d_lights, int num_lights,
+    const CudaSphere *d_spheres, int num_spheres,
+    const CudaTriangle *d_triangles, int num_triangles,
     CudaHitPoint *hit_points, // 被更新的目標
     int *hash_head, int *hash_next,
     float3 min_bound, float3 max_bound, float cell_size,
@@ -184,18 +183,18 @@ __global__ void ppm_photon_trace(
     curandState localState = states[idx];
 
     int light_idx = idx % num_lights;
-    CudaLight light = lights[light_idx];
-    float3 ray_point, ray_dir;
-    float ray_refract = 1.0f;
+    CudaLight light = d_lights[light_idx];
+    float3 lightray_point, lightray_dir;
+    float lightray_refract = 1.0f;
 
     if(light.is_parallel){
-        ray_dir = normalize(light.dir);
+        lightray_dir = normalize(light.dir);
 
         float3 scene_center = (min_bound + max_bound) * 0.5f;
         float3 diag = max_bound - min_bound;
         float scene_radius = length(diag) * 0.5f;
 
-        float3 w = ray_dir;
+        float3 w = lightray_dir;
         float3 u, v;
 
         if(fabs(w.x) > 0.9f) u = make_float3(0.0f, 1.0f, 0.0f);
@@ -211,10 +210,10 @@ __global__ void ppm_photon_trace(
         float offset_u = (r1 - 0.5f) * plane_size;
         float offset_v = (r2 - 0.5f) * plane_size;
 
-        ray_point = scene_center - ray_dir * (scene_radius * 2.0f) + u * offset_u + v * offset_v;
+        lightray_point = scene_center - lightray_dir * (scene_radius * 2.0f) + u * offset_u + v * offset_v;
     }
     else{
-        ray_point = light.pos;
+        lightray_point = light.pos;
 
         float3 w = normalize(light.dir);
         float3 u, v;
@@ -236,33 +235,33 @@ __global__ void ppm_photon_trace(
             cosf(theta)
         );
 
-        ray_dir = normalize(u * local_dir.x + v * local_dir.y + w * local_dir.z);
-        ray_point = ray_point + ray_dir * light.light_ball.r; // 避免自相交
+        lightray_dir = normalize(u * local_dir.x + v * local_dir.y + w * local_dir.z);
+        lightray_point = lightray_point + lightray_dir * light.light_ball.r; // 避免自相交
     }
 
     float3 photon_flux = light.illum * (float) num_lights;
 
 
     for(int depth = 0; depth < max_depth; depth++){
-        CudaHit hit = find_closest_hit(ray_point, ray_dir,
-            spheres, num_spheres,
-            triangles, num_triangles,
-            lights, num_lights);
+        CudaHit hit = find_closest_hit(lightray_point, lightray_dir,
+            d_spheres, num_spheres,
+            d_triangles, num_triangles,
+            d_lights, num_lights);
         if(!hit.hit) break;
         if(hit.is_light) break; // 光源不反射
 
         float do_reflect = curand_uniform(&localState);
-        if(hit.mtl.reflect > 0.0f && do_reflect < hit.mtl.reflect){
-            ray_point = hit.pos + hit.normal * EPSILON;
-            ray_dir = reflect(ray_dir, hit.normal);
+        if(hit.mtl_old.reflect > 0.0f && do_reflect < hit.mtl_old.reflect){
+            lightray_point = hit.pos + hit.normal * EPSILON;
+            lightray_dir = reflect(lightray_dir, hit.normal);
             depth--;
             continue;
         }
-        if(hit.mtl.refract > 0.0f){
+        if(hit.mtl_old.refract > 0.0f){
             float3 refracted_dir;
-            float3 I = ray_dir, N = hit.normal;
-            float n1 = ray_refract;
-            float n2 = hit.mtl.refract;
+            float3 I = lightray_dir, N = hit.normal;
+            float n1 = lightray_refract;
+            float n2 = hit.mtl_old.refract;
 
             float cosNI = dot(I, N);
             if(cosNI > 0.0f){
@@ -273,29 +272,29 @@ __global__ void ppm_photon_trace(
             float eta = n1 / n2;
             refracted_dir = refract(I, N, eta);
             if(length(refracted_dir) > 0.0f){
-                ray_point = hit.pos - hit.normal * EPSILON;
-                ray_dir = refracted_dir;
-                ray_refract = hit.mtl.refract;
+                lightray_point = hit.pos - hit.normal * EPSILON;
+                lightray_dir = refracted_dir;
+                lightray_refract = hit.mtl_old.refract;
             }
             else{
-                ray_point = hit.pos + hit.normal * EPSILON;
-                ray_dir = reflect(ray_dir, hit.normal);
+                lightray_point = hit.pos + hit.normal * EPSILON;
+                lightray_dir = reflect(lightray_dir, hit.normal);
             }
             depth--;
             continue;
         }
 
         float do_glossy = curand_uniform(&localState);
-        if(do_glossy < hit.mtl.glossy){
-            float3 perfect_reflect = reflect(ray_dir, hit.normal);
-            float roughness = (hit.mtl.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl.exp * 0.0005f + .001f);
+        if(do_glossy < hit.mtl_old.glossy){
+            float3 perfect_reflect = reflect(lightray_dir, hit.normal);
+            float roughness = (hit.mtl_old.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl_old.exp * 0.0005f + .001f);
             float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
-            ray_dir = normalize(perfect_reflect + jitter);
-            if(dot(ray_dir, hit.normal) < 0.0f){
-                ray_dir = ray_dir - hit.normal * dot(ray_dir, hit.normal) * 2.0f;
-                ray_dir = normalize(ray_dir);
+            lightray_dir = normalize(perfect_reflect + jitter);
+            if(dot(lightray_dir, hit.normal) < 0.0f){
+                lightray_dir = lightray_dir - hit.normal * dot(lightray_dir, hit.normal) * 2.0f;
+                lightray_dir = normalize(lightray_dir);
             }
-            ray_point = hit.pos + ray_dir * EPSILON;
+            lightray_point = hit.pos + lightray_dir * EPSILON;
         }
         else{
 
@@ -324,7 +323,7 @@ __global__ void ppm_photon_trace(
                                 float dist2 = dot(diff, diff);
 
                                 if(dist2 < hp.radius2){
-                                    float3 kd = hp.mtl.Kd;
+                                    float3 kd = hp.mtl_old.Kd;
                                     float3 tp = hp.throughput;
                                     float3 energy = photon_flux * kd * tp;
                                     atomicAddVec3(&hp.accum_flux, energy);
@@ -338,9 +337,9 @@ __global__ void ppm_photon_trace(
             }
 
 
-            ray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
-            photon_flux = photon_flux * hit.mtl.Kd;
-            ray_point = hit.pos + ray_dir * EPSILON;
+            lightray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
+            photon_flux = photon_flux * hit.mtl_old.Kd;
+            lightray_point = hit.pos + lightray_dir * EPSILON;
         }
     }
     states[idx] = localState;

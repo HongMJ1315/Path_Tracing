@@ -22,7 +22,7 @@ void move_data_to_cuda_ppm(std::map<int, AABB> groups, std::vector<CudaLight> &l
                 CudaSphere csph;
                 csph.center = to_cv3(sph->center);
                 csph.r = sph->r;
-                csph.mtl = to_cmtl(sph->mtl);
+                csph.mtl_old = to_cmtl_old(sph->mtl);
                 csph.id = sph->obj_id;
                 ppm_ns::cuda_spheres.push_back(csph);
                 ppm_ns::scene_max_bound.x = std::max(ppm_ns::scene_max_bound.x, sph->center.x + sph->r);
@@ -37,7 +37,7 @@ void move_data_to_cuda_ppm(std::map<int, AABB> groups, std::vector<CudaLight> &l
                 ctri.v0 = to_cv3(tri->vert[0]);
                 ctri.v1 = to_cv3(tri->vert[1]);
                 ctri.v2 = to_cv3(tri->vert[2]);
-                ctri.mtl = to_cmtl(tri->mtl);
+                ctri.mtl_old = to_cmtl_old(tri->mtl);
                 ctri.id = tri->obj_id;
                 ppm_ns::cuda_triangles.push_back(ctri);
                 ppm_ns::scene_max_bound.x = std::max({ ppm_ns::scene_max_bound.x, tri->vert[0].x, tri->vert[1].x, tri->vert[2].x });

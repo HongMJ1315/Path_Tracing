@@ -166,7 +166,7 @@ int main(int argc, char **argv){
             input >> ka >> kd >> ks >> mtl.reflect >> mtl.refract >> mtl.exp;
             float total = ka + kd + ks;
             mtl.Kg = color * ka;
-            mtl.Kd = color * kd;
+            mtl.Kd = color;
             mtl.Ks = color * ks;
             mtl.glossy = ka;
             // std::cout << color << " " << mtl.kg << " " << mtl.Kd << " " << mtl.Ks << std::endl;
@@ -191,7 +191,7 @@ int main(int argc, char **argv){
             light.cutoff = glm::radians(cutoff_deg);
             input >> light.is_parallel >> light.light_ball.r;
             light.light_ball.center = light.pos;
-            light.light_ball.mtl.Kd = light.illum;
+            light.light_ball.mtl_old.Kd = light.illum;
             cu_light.push_back(light);
         }
     }
@@ -279,6 +279,7 @@ int main(int argc, char **argv){
 
     bool is_first = 1;
     bool stop_write = false;
+    bool run_iteration = true;
 
     FILE *rms_gp = popen("gnuplot -persist", "w");
     if(rms_gp){
@@ -291,9 +292,9 @@ int main(int argc, char **argv){
 
     std::vector<float> ppm_rms_history, bdpt_rms_history, diff_rms_history, pt_rms_history;
     std::vector<float3> ppm_results(W * H);
-    std::vector<float3> bdpt_results(W *H);
-    std::vector<float3> pt_results(W *H);
-    
+    std::vector<float3> bdpt_results(W * H);
+    std::vector<float3> pt_results(W * H);
+
     while(!glfwWindowShouldClose(window)){
         /*--------------------------
         Image Save Function
@@ -457,18 +458,33 @@ int main(int argc, char **argv){
                     // int pt_frame_idx = (size_t(row_flipped) * total_width + (i + W * 3)) * 3;
                     int combined_frame_idx = (size_t(row_flipped) * total_width + (i + W * 2)) * 3;
 
-                    ppm_buffer[image_idx + 0] += ppm_col.r;
-                    ppm_buffer[image_idx + 1] += ppm_col.g;
-                    ppm_buffer[image_idx + 2] += ppm_col.b;
+                    if(run_iteration){
+                        ppm_buffer[image_idx + 0] += ppm_col.r;
+                        ppm_buffer[image_idx + 1] += ppm_col.g;
+                        ppm_buffer[image_idx + 2] += ppm_col.b;
 
-                    bdpt_buffer[image_idx + 0] += bdpt_col.r;
-                    bdpt_buffer[image_idx + 1] += bdpt_col.g;
-                    bdpt_buffer[image_idx + 2] += bdpt_col.b;
+                        bdpt_buffer[image_idx + 0] += bdpt_col.r;
+                        bdpt_buffer[image_idx + 1] += bdpt_col.g;
+                        bdpt_buffer[image_idx + 2] += bdpt_col.b;
 
-                    pt_buffer[image_idx + 0] += pt_col.r;
-                    pt_buffer[image_idx + 1] += pt_col.g;
-                    pt_buffer[image_idx + 2] += pt_col.b;
+                        pt_buffer[image_idx + 0] += pt_col.r;
+                        pt_buffer[image_idx + 1] += pt_col.g;
+                        pt_buffer[image_idx + 2] += pt_col.b;
+                    }
+                    else{
+                        ppm_buffer[image_idx + 0] = ppm_col.r;
+                        ppm_buffer[image_idx + 1] = ppm_col.g;
+                        ppm_buffer[image_idx + 2] = ppm_col.b;
 
+                        bdpt_buffer[image_idx + 0] = bdpt_col.r;
+                        bdpt_buffer[image_idx + 1] = bdpt_col.g;
+                        bdpt_buffer[image_idx + 2] = bdpt_col.b;
+
+                        pt_buffer[image_idx + 0] = pt_col.r;
+                        pt_buffer[image_idx + 1] = pt_col.g;
+                        pt_buffer[image_idx + 2] = pt_col.b;
+                        render_conut = 1;
+                    }
                     current_ppm[image_idx + 0] = (unsigned char) ((ppm_buffer[image_idx + 0] / (float) render_conut) * 255.f);
                     current_ppm[image_idx + 1] = (unsigned char) ((ppm_buffer[image_idx + 1] / (float) render_conut) * 255.f);
                     current_ppm[image_idx + 2] = (unsigned char) ((ppm_buffer[image_idx + 2] / (float) render_conut) * 255.f);
