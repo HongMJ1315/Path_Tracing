@@ -69,7 +69,7 @@ __global__ void ppm_eye_trace(
     CudaHitPoint *hit_points,
     curandState *states,
     int W, int H, int max_depth,
-    float3 *image // 為了直接寫入背景色
+    float3 *image
 ){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= W * H) return;
@@ -78,12 +78,12 @@ __global__ void ppm_eye_trace(
     curandState localState = states[idx];
 
     hit_points[idx].valid = false;
-    hit_points[idx].accum_flux = { 0.0f, 0.0f, 0.0f };
+    hit_points[idx].accum_flux = make_float3(0.0f, 0.0f, 0.0f);
     hit_points[idx].photon_count = 0;
-    hit_points[idx].radius2 = PPM_RADIUS * PPM_RADIUS; // 固定半徑平方
+    hit_points[idx].radius2 = PPM_RADIUS * PPM_RADIUS;
     hit_points[idx].pixel_idx = idx;
+    image[idx] = make_float3(0.0f, 0.0f, 0.0f);
 
-    // Ray Generation
     float pixel_x = (float) px + curand_uniform(&localState);
     float pixel_y = (float) py + curand_uniform(&localState);
     float3 eyeray_point = cam.eye;
@@ -92,77 +92,63 @@ __global__ void ppm_eye_trace(
     float eyeray_refract = 1.0f;
     float3 throughput = make_float3(1.0f, 1.0f, 1.0f);
 
+    bool last_is_delta = true;
+
     for(int depth = 0; depth < max_depth; depth++){
         CudaHit hit = find_closest_hit(eyeray_point, eyeray_dir,
-            d_spheres, num_spheres,
-            d_triangles, num_triangles,
-            d_lights, num_lights);
-        if(!hit.hit){
-            image[idx] = { 0.0f, 0.0f, 0.0f };
-            break;
-        }
+            d_spheres, num_spheres, d_triangles, num_triangles, d_lights, num_lights);
+
+        if(!hit.hit) break;
+
+        float3 wo = eyeray_dir * -1.0f;
+
+        // 直接打到光源
         if(hit.is_light){
-            image[idx] = hit.mtl_old.Kd; // 直接將光源顏色寫入背景
+            if(last_is_delta){
+                float3 contrib = throughput * hit.mtl.base_color;
+                if(is_valid_color(contrib)) image[idx] = clamp_radiance(contrib, 15.0f);
+            }
             break;
         }
 
-        float do_reflect = curand_uniform(&localState);
-        if(hit.mtl_old.reflect > 0.0f && do_reflect < hit.mtl_old.reflect){
-            eyeray_point = hit.pos + hit.normal * EPSILON;
-            eyeray_dir = reflect(eyeray_dir, hit.normal);
-            depth--;
-            continue;
-        }
-        if(hit.mtl_old.refract > 0.0f){
-            float3 refracted_dir;
-            float3 I = eyeray_dir, N = hit.normal;
-            float n1 = eyeray_refract;
-            float n2 = hit.mtl_old.refract;
+        float3 wi;
+        float3 bsdf_val;
+        float pdf_omega;
+        bool is_delta;
+        float new_eta;
 
-            float cosNI = dot(I, N);
-            if(cosNI > 0.0f){
-                swap(n1, n2);
-                N = N * -1.0f;
-                cosNI = dot(I, N);
-            }
-            float eta = n1 / n2;
-            refracted_dir = refract(I, N, eta);
-            if(length(refracted_dir) > 0.0f){
-                eyeray_point = hit.pos - hit.normal * EPSILON;
-                eyeray_dir = refracted_dir;
-                eyeray_refract = hit.mtl_old.refract;
-            }
-            else{
-                eyeray_point = hit.pos + hit.normal * EPSILON;
-                eyeray_dir = reflect(eyeray_dir, hit.normal);
-            }
+        // BSDF 採樣
+        bsdf_sample(hit.mtl, wo, hit.normal,
+            curand_uniform(&localState), curand_uniform(&localState), curand_uniform(&localState),
+            eyeray_refract,wi, bsdf_val, pdf_omega, is_delta, new_eta);
+
+        if(is_delta){
+            // 完美折射/反射：繼續追蹤
+            if(pdf_omega <= 0.0f) break;
+            throughput = throughput * bsdf_val;
+            eyeray_dir = wi;
+            eyeray_refract = new_eta;
+            eyeray_point = hit.pos + hit.normal * (dot(wi, hit.normal) < 0.0f ? -EPSILON : EPSILON);
+            last_is_delta = true;
+            if(!is_valid_color(throughput)) break;
+
             depth--;
             continue;
-        }
-        float do_glossy = curand_uniform(&localState);
-        if(do_glossy < hit.mtl_old.glossy){
-            float3 perfect_reflect = reflect(eyeray_dir, hit.normal);
-            float roughness = (hit.mtl_old.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl_old.exp * 0.0005f + .001f);
-            float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
-            eyeray_dir = normalize(perfect_reflect + jitter);
-            if(dot(eyeray_dir, hit.normal) < 0.0f){
-                eyeray_dir = eyeray_dir - hit.normal * dot(eyeray_dir, hit.normal) * 2.0f;
-                eyeray_dir = normalize(eyeray_dir);
-            }
-            eyeray_point = hit.pos + eyeray_dir * EPSILON;
         }
         else{
+            // 粗糙表面：建立 HitPoint 等待光子，終止射線
             hit_points[idx].valid = true;
             hit_points[idx].pos = hit.pos;
             hit_points[idx].normal = hit.normal;
-            hit_points[idx].mtl_old = hit.mtl_old;
+            hit_points[idx].wo = wo; // 記住相機方向
+            hit_points[idx].mtl = hit.mtl;
             hit_points[idx].throughput = throughput;
-            image[idx] = { 0.0f, 0.0f, 0.0f };
             break;
         }
     }
     states[idx] = localState;
 }
+
 
 // =========================================================================================
 // PPM: Stage 2 - Photon Trace (Scatter & Gather)
@@ -171,11 +157,11 @@ __global__ void ppm_photon_trace(
     const CudaLight *d_lights, int num_lights,
     const CudaSphere *d_spheres, int num_spheres,
     const CudaTriangle *d_triangles, int num_triangles,
-    CudaHitPoint *hit_points, // 被更新的目標
+    CudaHitPoint *hit_points,
     int *hash_head, int *hash_next,
     float3 min_bound, float3 max_bound, float cell_size,
     curandState *states,
-    int max_depth, int num_photons
+    int max_depth, int num_photons, int spl
 ){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= num_photons) return;
@@ -187,117 +173,56 @@ __global__ void ppm_photon_trace(
     float3 lightray_point, lightray_dir;
     float lightray_refract = 1.0f;
 
+    // 光源發射邏輯 (保持不變)
     if(light.is_parallel){
         lightray_dir = normalize(light.dir);
-
         float3 scene_center = (min_bound + max_bound) * 0.5f;
         float3 diag = max_bound - min_bound;
         float scene_radius = length(diag) * 0.5f;
-
         float3 w = lightray_dir;
         float3 u, v;
-
         if(fabs(w.x) > 0.9f) u = make_float3(0.0f, 1.0f, 0.0f);
         else u = make_float3(1.0f, 0.0f, 0.0f);
-
         v = normalize(cross(w, u));
         u = normalize(cross(v, w));
-
         float r1 = curand_uniform(&localState);
         float r2 = curand_uniform(&localState);
-
         float plane_size = scene_radius * 2.0f;
         float offset_u = (r1 - 0.5f) * plane_size;
         float offset_v = (r2 - 0.5f) * plane_size;
-
         lightray_point = scene_center - lightray_dir * (scene_radius * 2.0f) + u * offset_u + v * offset_v;
     }
     else{
         lightray_point = light.pos;
-
         float3 w = normalize(light.dir);
         float3 u, v;
-
         if(fabs(w.x) > 0.9f) u = make_float3(0.0f, 1.0f, 0.0f);
         else u = make_float3(1.0f, 0.0f, 0.0f);
-
         v = normalize(cross(w, u));
         u = normalize(cross(v, w));
-
         float u1 = curand_uniform(&localState);
         float u2 = curand_uniform(&localState);
         float theta = acosf(1.0f - u1 * (1.0f - cosf(light.cutoff)));
         float phi = 2.0f * PI * u2;
-
-        float3 local_dir = make_float3(
-            sinf(theta) * cosf(phi),
-            sinf(theta) * sinf(phi),
-            cosf(theta)
-        );
-
+        float3 local_dir = make_float3(sinf(theta) * cosf(phi), sinf(theta) * sinf(phi), cosf(theta));
         lightray_dir = normalize(u * local_dir.x + v * local_dir.y + w * local_dir.z);
-        lightray_point = lightray_point + lightray_dir * light.light_ball.r; // 避免自相交
+        lightray_point = lightray_point + lightray_dir * light.light_ball.r;
     }
 
-    float3 photon_flux = light.illum * (float) num_lights;
-
+    // [修正能量] 將光源總能量依據 spl 平均分配給每一顆光子
+    float3 photon_flux = light.illum * (float) num_lights / fmaxf((float) spl, 1.0f);
 
     for(int depth = 0; depth < max_depth; depth++){
         CudaHit hit = find_closest_hit(lightray_point, lightray_dir,
-            d_spheres, num_spheres,
-            d_triangles, num_triangles,
-            d_lights, num_lights);
-        if(!hit.hit) break;
-        if(hit.is_light) break; // 光源不反射
+            d_spheres, num_spheres, d_triangles, num_triangles, d_lights, num_lights);
 
-        float do_reflect = curand_uniform(&localState);
-        if(hit.mtl_old.reflect > 0.0f && do_reflect < hit.mtl_old.reflect){
-            lightray_point = hit.pos + hit.normal * EPSILON;
-            lightray_dir = reflect(lightray_dir, hit.normal);
-            depth--;
-            continue;
-        }
-        if(hit.mtl_old.refract > 0.0f){
-            float3 refracted_dir;
-            float3 I = lightray_dir, N = hit.normal;
-            float n1 = lightray_refract;
-            float n2 = hit.mtl_old.refract;
+        if(!hit.hit || hit.is_light) break;
 
-            float cosNI = dot(I, N);
-            if(cosNI > 0.0f){
-                swap(n1, n2);
-                N = N * -1.0f;
-                cosNI = dot(I, N);
-            }
-            float eta = n1 / n2;
-            refracted_dir = refract(I, N, eta);
-            if(length(refracted_dir) > 0.0f){
-                lightray_point = hit.pos - hit.normal * EPSILON;
-                lightray_dir = refracted_dir;
-                lightray_refract = hit.mtl_old.refract;
-            }
-            else{
-                lightray_point = hit.pos + hit.normal * EPSILON;
-                lightray_dir = reflect(lightray_dir, hit.normal);
-            }
-            depth--;
-            continue;
-        }
+        float3 wi_light = lightray_dir * -1.0f; // 從交點看向光源的方向
 
-        float do_glossy = curand_uniform(&localState);
-        if(do_glossy < hit.mtl_old.glossy){
-            float3 perfect_reflect = reflect(lightray_dir, hit.normal);
-            float roughness = (hit.mtl_old.exp > 1000.f) ? 0.0f : 1.0f / (hit.mtl_old.exp * 0.0005f + .001f);
-            float3 jitter = random_in_unit_sphere_device(&localState) * roughness;
-            lightray_dir = normalize(perfect_reflect + jitter);
-            if(dot(lightray_dir, hit.normal) < 0.0f){
-                lightray_dir = lightray_dir - hit.normal * dot(lightray_dir, hit.normal) * 2.0f;
-                lightray_dir = normalize(lightray_dir);
-            }
-            lightray_point = hit.pos + lightray_dir * EPSILON;
-        }
-        else{
-
+        // --- PBR Splatting (尋找附近的 HitPoint 並注入能量) ---
+        // 只有打在非完美鏡面/玻璃時，光子才會被記錄
+        if(hit.mtl.eta <= 0.0f && (hit.mtl.metallic < 0.99f || hit.mtl.roughness > 0.01f)){
             int3 center_grid = make_int3(
                 (int) floorf((hit.pos.x - min_bound.x) / cell_size),
                 (int) floorf((hit.pos.y - min_bound.y) / cell_size),
@@ -310,24 +235,24 @@ __global__ void ppm_photon_trace(
                         int neighbor_gx = center_grid.x + x;
                         int neighbor_gy = center_grid.y + y;
                         int neighbor_gz = center_grid.z + z;
-
                         int h_idx = hash_grid_indices(neighbor_gx, neighbor_gy, neighbor_gz);
-
                         int hp_idx = hash_head[h_idx];
+
                         while(hp_idx != -1){
                             CudaHitPoint &hp = hit_points[hp_idx];
-
-                            if(dot(hp.normal, hit.normal) > 0.9f){
-                                float3 hp_pos = hp.pos;
-                                float3 diff = hp_pos - hit.pos;
-                                float dist2 = dot(diff, diff);
-
+                            // 確保法線方向一致 (避免漏光)
+                            if(dot(hp.normal, hit.normal) > 0.01f){
+                                float dist2 = dot(hp.pos - hit.pos, hp.pos - hit.pos);
                                 if(dist2 < hp.radius2){
-                                    float3 kd = hp.mtl_old.Kd;
-                                    float3 tp = hp.throughput;
-                                    float3 energy = photon_flux * kd * tp;
-                                    atomicAddVec3(&hp.accum_flux, energy);
-                                    atomicAdd(&hp.photon_count, 1.0f);
+                                    // [PBR 核心] 評估 BRDF!
+                                    // hp.wo: 相機方向, wi_light: 光子方向, hp.normal: 法線
+                                    float3 brdf = bsdf_evaluate(hp.mtl, hp.wo, wi_light, hp.normal);
+
+                                    if(is_valid_color(brdf)){
+                                        float3 energy = photon_flux * brdf * hp.throughput;
+                                        atomicAddVec3(&hp.accum_flux, energy);
+                                        atomicAdd(&hp.photon_count, 1.0f);
+                                    }
                                 }
                             }
                             hp_idx = hash_next[hp_idx];
@@ -335,12 +260,36 @@ __global__ void ppm_photon_trace(
                     }
                 }
             }
-
-
-            lightray_dir = sample_hemisphere_cosine_device(hit.normal, &localState);
-            photon_flux = photon_flux * hit.mtl_old.Kd;
-            lightray_point = hit.pos + lightray_dir * EPSILON;
         }
+
+        // --- 光子彈射 (BSDF Sample) ---
+        float3 wi;
+        float3 bsdf_val;
+        float pdf_omega;
+        bool is_delta;
+        float new_eta;
+
+        bsdf_sample(hit.mtl, wi_light, hit.normal,
+            curand_uniform(&localState), curand_uniform(&localState), curand_uniform(&localState),
+            lightray_refract,wi, bsdf_val, pdf_omega, is_delta, new_eta);
+
+        if(pdf_omega <= 0.0f) break;
+
+        float cos_wi = fabs(dot(hit.normal, wi));
+
+        if(is_delta){
+            photon_flux = photon_flux * bsdf_val;
+            depth--; // 完美折射/反射不扣除深度
+        }
+        else{
+            photon_flux = photon_flux * bsdf_val * cos_wi / pdf_omega;
+        }
+
+        if(!is_valid_color(photon_flux)) break;
+
+        lightray_dir = wi;
+        lightray_refract = new_eta;
+        lightray_point = hit.pos + hit.normal * (dot(wi, hit.normal) < 0.0f ? -EPSILON : EPSILON);
     }
     states[idx] = localState;
 }
@@ -362,9 +311,13 @@ __global__ void ppm_resolve_image(
         float r2 = hit_points[idx].radius2;
 
         float area = PI * r2;
-        float3 radiance = flux / (area * (float) total_emitted_photons);
+        float3 radiance = flux / fmaxf(area, 1e-6f);
 
-        image[idx] = radiance;
+        if(is_valid_color(radiance)){
+            // 與 PT/BDPT 相同的 Clamp 保護
+            image[idx] = image[idx] + clamp_radiance(radiance, 15.0f);
+        }
+
     }
 }
 
@@ -379,9 +332,8 @@ void ppm_render_wrapper(
     float3 scene_min, float3 scene_max,
     const CudaCamera cuda_camera, float3 *h_image,
     int W, int H,
-    int light_depth, int light_sample, int eye_depth
+    int light_depth, int light_sample, int eye_depth, int spp
 ){
-    // 1. Setup Scene
     CudaLight *d_lights; cudaMalloc(&d_lights, sizeof(CudaLight) * num_lights);
     cudaMemcpy(d_lights, h_lights, sizeof(CudaLight) * num_lights, cudaMemcpyHostToDevice);
 
@@ -391,19 +343,21 @@ void ppm_render_wrapper(
     CudaTriangle *d_triangles; cudaMalloc(&d_triangles, sizeof(CudaTriangle) * num_triangles);
     cudaMemcpy(d_triangles, h_triangles, sizeof(CudaTriangle) * num_triangles, cudaMemcpyHostToDevice);
 
-    // 2. Setup HitPoints & Image
     CudaHitPoint *d_hit_points;
     cudaMalloc(&d_hit_points, sizeof(CudaHitPoint) * W * H);
 
     float3 *d_image;
     cudaMalloc(&d_image, sizeof(float3) * W * H);
 
+    // [修正] Total Photons 必須是 光源數量 * SPL (light_sample)
+    int total_photons = num_lights * light_sample;
+
     curandState *d_states;
-    int max_threads = W * H > light_sample ? W * H : light_sample;
+    int max_threads = W * H > total_photons ? W * H : total_photons;
     cudaMalloc(&d_states, sizeof(curandState) * max_threads);
     ppm_init_rng << <(max_threads + 255) / 256, 256 >> > (d_states, time(NULL) + 1234, max_threads);
 
-    // 3. Eye Trace (Generate Hit Points)
+    // 1. Eye Trace
     ppm_eye_trace << <(W * H + 255) / 256, 256 >> > (
         d_lights, num_lights,
         d_spheres, num_spheres, d_triangles, num_triangles,
@@ -411,10 +365,10 @@ void ppm_render_wrapper(
         );
     cudaDeviceSynchronize();
 
-    // 4. Build Hash Grid
+    // 2. Build Hash Grid
     int *d_hash_head, *d_hash_next;
     cudaMalloc(&d_hash_head, sizeof(int) * HASH_TABLE_SIZE);
-    cudaMalloc(&d_hash_next, sizeof(int) * W * H); // Next pointer for each HitPoint
+    cudaMalloc(&d_hash_next, sizeof(int) * W * H);
 
     reset_hash_grid << <(HASH_TABLE_SIZE + 255) / 256, 256 >> >
         (d_hash_head, HASH_TABLE_SIZE);
@@ -424,25 +378,22 @@ void ppm_render_wrapper(
         );
     cudaDeviceSynchronize();
 
-    // 5. Photon Trace
-    int num_photons = light_sample; // Assuming light_sample passed is total photons
-    ppm_photon_trace << <(num_photons + 255) / 256, 256 >> > (
+    // 3. Photon Trace
+    ppm_photon_trace << <(total_photons + 255) / 256, 256 >> > (
         d_lights, num_lights, d_spheres, num_spheres, d_triangles, num_triangles,
         d_hit_points, d_hash_head, d_hash_next, scene_min, scene_max, PPM_RADIUS,
-        d_states, light_depth, num_photons
+        d_states, light_depth, total_photons, light_sample // 傳入 spl (light_sample)
         );
     cudaDeviceSynchronize();
 
-    // 6. Resolve Image
+    // 4. Resolve Image
     ppm_resolve_image << <(W * H + 255) / 256, 256 >> > (
-        d_hit_points, d_image, W, H, num_photons
+        d_hit_points, d_image, W, H, total_photons
         );
     cudaDeviceSynchronize();
 
-    // 7. Copy Back
     cudaMemcpy(h_image, d_image, sizeof(float3) * W * H, cudaMemcpyDeviceToHost);
 
-    // Cleanup
     cudaFree(d_lights); cudaFree(d_spheres); cudaFree(d_triangles);
     cudaFree(d_hit_points); cudaFree(d_image); cudaFree(d_states);
     cudaFree(d_hash_head); cudaFree(d_hash_next);

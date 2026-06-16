@@ -8,6 +8,7 @@ namespace pt_ns{
     float3 scene_min_bound = { 1e9f, 1e9f, 1e9f };
     int light_sample = 0;
 }
+
 void move_data_to_cuda_pt(std::map<int, AABB> groups, std::vector<CudaLight> &lights, int light_sample){
     /*--------------------------
     Move to CUDA Formate
@@ -21,7 +22,8 @@ void move_data_to_cuda_pt(std::map<int, AABB> groups, std::vector<CudaLight> &li
                 CudaSphere csph;
                 csph.center = to_cv3(sph->center);
                 csph.r = sph->r;
-                csph.mtl_old = to_cmtl_old(sph->mtl);
+                // csph.mtl_old = to_cmtl_old(sph->mtl);
+                csph.mtl = to_cmtl(sph->mtl);
                 csph.id = sph->obj_id;
                 pt_ns::cuda_spheres.push_back(csph);
                 pt_ns::scene_max_bound.x = std::max(pt_ns::scene_max_bound.x, sph->center.x + sph->r);
@@ -36,7 +38,8 @@ void move_data_to_cuda_pt(std::map<int, AABB> groups, std::vector<CudaLight> &li
                 ctri.v0 = to_cv3(tri->vert[0]);
                 ctri.v1 = to_cv3(tri->vert[1]);
                 ctri.v2 = to_cv3(tri->vert[2]);
-                ctri.mtl_old = to_cmtl_old(tri->mtl);
+                // ctri.mtl_old = to_cmtl_old(tri->mtl);
+                ctri.mtl = to_cmtl(tri->mtl);
                 ctri.id = tri->obj_id;
                 pt_ns::cuda_triangles.push_back(ctri);
                 pt_ns::scene_max_bound.x = std::max({ pt_ns::scene_max_bound.x, tri->vert[0].x, tri->vert[1].x, tri->vert[2].x });
@@ -56,9 +59,11 @@ void move_data_to_cuda_pt(std::map<int, AABB> groups, std::vector<CudaLight> &li
 
     pt_ns::light_sample = light_sample;
 
+    std::cout << "moved" << std::endl;
+
 }
 
-void run_cuda_pt(CudaCamera cam, float3 *image_buffer, int light_depth, int eye_depth, int W, int H){
+void run_cuda_pt(CudaCamera cam, float3 *image_buffer, int light_depth, int eye_depth, int W, int H, int spp){
     /*--------------------------
     Call CUDA PT Kernel
     --------------------------*/
@@ -67,6 +72,6 @@ void run_cuda_pt(CudaCamera cam, float3 *image_buffer, int light_depth, int eye_
         pt_ns::cuda_spheres.data(), pt_ns::cuda_spheres.size(),
         pt_ns::cuda_triangles.data(), pt_ns::cuda_triangles.size(),
         pt_ns::scene_min_bound, pt_ns::scene_max_bound,
-        cam, image_buffer, W, H, light_depth, pt_ns::light_sample, eye_depth
+        cam, image_buffer, W, H, light_depth, pt_ns::light_sample, eye_depth, spp
     );
 }

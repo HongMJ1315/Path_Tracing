@@ -160,17 +160,8 @@ int main(int argc, char **argv){
             // std::cout << "read T" << std::endl;
         }
         else if(t == 'M'){
-            float ka, kd, ks;
-            glm::vec3 color;
-            input >> color;
-            input >> ka >> kd >> ks >> mtl.reflect >> mtl.refract >> mtl.exp;
-            float total = ka + kd + ks;
-            mtl.Kg = color * ka;
-            mtl.Kd = color;
-            mtl.Ks = color * ks;
-            mtl.glossy = ka;
-            // std::cout << color << " " << mtl.kg << " " << mtl.Kd << " " << mtl.Ks << std::endl;
-            // std::cout << "read M" << std::endl;
+            input >> mtl.base_color >> mtl.roughness >> mtl.metallic >> mtl.eta;
+
         }
         else if(t == 'G' && GROUPING){
             input >> group_id;
@@ -323,7 +314,7 @@ int main(int argc, char **argv){
 
             cv::Mat bdpt_img = img_process(current_bdpt, W, H);
             cv::Mat ppm_img = img_process(current_ppm, W, H);
-            cv::Mat img_bgr_Flip = img_process(combined, W, H);
+            cv::Mat img_bgr_Flip = img_process(current_pt, W, H);
             std::stringstream ss;
             ss << "E" << EYE_DEPTH
                 << "_L" << LIGHT_DEPTH
@@ -412,17 +403,17 @@ int main(int argc, char **argv){
             ppm_results.resize(W * H);
             bdpt_results.resize(W * H);
             start_time = std::chrono::steady_clock::now();
-            run_cuda_ppm(cam, ppm_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H);
+            run_cuda_ppm(cam, ppm_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H, 8);
             end_time = std::chrono::steady_clock::now();
             diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
             std::cout << "PPM Render Elapsed time: " << diff.count() << " ms" << std::endl;
             start_time = std::chrono::steady_clock::now();
-            run_cuda_bdpt(cam, bdpt_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H);
+            run_cuda_bdpt(cam, bdpt_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H, 8);
             end_time = std::chrono::steady_clock::now();
             diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
             std::cout << "BDPT Render Elapsed time: " << diff.count() << " ms" << std::endl;
             start_time = std::chrono::steady_clock::now();
-            run_cuda_pt(cam, pt_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H);
+            run_cuda_pt(cam, pt_results.data(), EYE_DEPTH, LIGHT_DEPTH, W, H, 8);
             end_time = std::chrono::steady_clock::now();
             diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
             std::cout << "PT Render Elapsed time: " << diff.count() << " ms" << std::endl;
@@ -432,83 +423,77 @@ int main(int argc, char **argv){
 
             for(int i = 0; i < W; i++){
                 for(int j = 0; j < H; j++){
+                    // 1. 取出 CUDA 算完的原始「線性」Radiance (尚未 Clamp 與 Tonemap)
                     float3 ppm_cu_col = ppm_results[j * W + i];
-                    glm::vec3 ppm_col = glm::vec3(ppm_cu_col.x, ppm_cu_col.y, ppm_cu_col.z);
-                    ppm_col = glm::clamp(ppm_col, glm::vec3(0.0f), glm::vec3(1.0f));
-                    ppm_col = glm::pow(ppm_col, glm::vec3(1.0f / 2.2f));
-                    float ppm[3] = { ppm_col.x, ppm_col.y, ppm_col.z };
-
                     float3 bdpt_cu_col = bdpt_results[j * W + i];
-                    glm::vec3 bdpt_col = glm::vec3(bdpt_cu_col.x, bdpt_cu_col.y, bdpt_cu_col.z);
-                    bdpt_col = glm::clamp(bdpt_col, glm::vec3(0.0f), glm::vec3(1.0f));
-                    bdpt_col = glm::pow(bdpt_col, glm::vec3(1.0f / 2.2f));
-                    float bdpt[3] = { bdpt_col.x, bdpt_col.y, bdpt_col.z };
-
                     float3 pt_cu_col = pt_results[j * W + i];
-                    glm::vec3 pt_col = glm::vec3(pt_cu_col.x, pt_cu_col.y, pt_cu_col.z);
-                    pt_col = glm::clamp(pt_col, glm::vec3(0.0f), glm::vec3(1.0f));
-                    pt_col = glm::pow(pt_col, glm::vec3(1.0f / 2.2f));
-                    float pt[3] = { pt_col.x, pt_col.y, pt_col.z };
 
                     int row_flipped = H - 1 - j; // Y軸翻轉
                     int image_idx = (size_t(row_flipped) * W + i) * 3;
 
+                    int total_width = W * 3;
                     int ppm_frame_idx = (size_t(row_flipped) * total_width + i) * 3;
                     int bdpt_frame_idx = (size_t(row_flipped) * total_width + (i + W)) * 3;
-                    // int pt_frame_idx = (size_t(row_flipped) * total_width + (i + W * 3)) * 3;
                     int combined_frame_idx = (size_t(row_flipped) * total_width + (i + W * 2)) * 3;
 
+                    // 2. 將「原始線性數值」累加進 Buffer，絕對不能在這裡 Clamp！
                     if(run_iteration){
-                        ppm_buffer[image_idx + 0] += ppm_col.r;
-                        ppm_buffer[image_idx + 1] += ppm_col.g;
-                        ppm_buffer[image_idx + 2] += ppm_col.b;
+                        ppm_buffer[image_idx + 0] += ppm_cu_col.x;
+                        ppm_buffer[image_idx + 1] += ppm_cu_col.y;
+                        ppm_buffer[image_idx + 2] += ppm_cu_col.z;
 
-                        bdpt_buffer[image_idx + 0] += bdpt_col.r;
-                        bdpt_buffer[image_idx + 1] += bdpt_col.g;
-                        bdpt_buffer[image_idx + 2] += bdpt_col.b;
+                        bdpt_buffer[image_idx + 0] += bdpt_cu_col.x;
+                        bdpt_buffer[image_idx + 1] += bdpt_cu_col.y;
+                        bdpt_buffer[image_idx + 2] += bdpt_cu_col.z;
 
-                        pt_buffer[image_idx + 0] += pt_col.r;
-                        pt_buffer[image_idx + 1] += pt_col.g;
-                        pt_buffer[image_idx + 2] += pt_col.b;
+                        pt_buffer[image_idx + 0] += pt_cu_col.x;
+                        pt_buffer[image_idx + 1] += pt_cu_col.y;
+                        pt_buffer[image_idx + 2] += pt_cu_col.z;
                     }
                     else{
-                        ppm_buffer[image_idx + 0] = ppm_col.r;
-                        ppm_buffer[image_idx + 1] = ppm_col.g;
-                        ppm_buffer[image_idx + 2] = ppm_col.b;
+                        ppm_buffer[image_idx + 0] = ppm_cu_col.x;
+                        ppm_buffer[image_idx + 1] = ppm_cu_col.y;
+                        ppm_buffer[image_idx + 2] = ppm_cu_col.z;
 
-                        bdpt_buffer[image_idx + 0] = bdpt_col.r;
-                        bdpt_buffer[image_idx + 1] = bdpt_col.g;
-                        bdpt_buffer[image_idx + 2] = bdpt_col.b;
+                        bdpt_buffer[image_idx + 0] = bdpt_cu_col.x;
+                        bdpt_buffer[image_idx + 1] = bdpt_cu_col.y;
+                        bdpt_buffer[image_idx + 2] = bdpt_cu_col.z;
 
-                        pt_buffer[image_idx + 0] = pt_col.r;
-                        pt_buffer[image_idx + 1] = pt_col.g;
-                        pt_buffer[image_idx + 2] = pt_col.b;
+                        pt_buffer[image_idx + 0] = pt_cu_col.x;
+                        pt_buffer[image_idx + 1] = pt_cu_col.y;
+                        pt_buffer[image_idx + 2] = pt_cu_col.z;
                         render_conut = 1;
                     }
-                    current_ppm[image_idx + 0] = (unsigned char) ((ppm_buffer[image_idx + 0] / (float) render_conut) * 255.f);
-                    current_ppm[image_idx + 1] = (unsigned char) ((ppm_buffer[image_idx + 1] / (float) render_conut) * 255.f);
-                    current_ppm[image_idx + 2] = (unsigned char) ((ppm_buffer[image_idx + 2] / (float) render_conut) * 255.f);
 
+                    // 3. 定義一個小函式來處理：平均 -> Clamp -> Tone Mapping -> 轉 8-bit
+                    auto process_pixel = [&](float accumulated_val, int count){
+                        float avg = accumulated_val / (float) count; // 算出平均線性輻射度
+                        avg = std::fmax(0.0f, std::fmin(avg, 1.0f)); // Clamp 到 0~1
+                        avg = std::pow(avg, 1.0f / 2.2f); // Gamma 校正 (Tone mapping)
+                        return (unsigned char) (avg * 255.0f);
+                    };
+
+                    // 4. 處理並寫入顯示用的 current 陣列
+                    current_ppm[image_idx + 0] = process_pixel(ppm_buffer[image_idx + 0], render_conut);
+                    current_ppm[image_idx + 1] = process_pixel(ppm_buffer[image_idx + 1], render_conut);
+                    current_ppm[image_idx + 2] = process_pixel(ppm_buffer[image_idx + 2], render_conut);
+
+                    current_bdpt[image_idx + 0] = process_pixel(bdpt_buffer[image_idx + 0], render_conut);
+                    current_bdpt[image_idx + 1] = process_pixel(bdpt_buffer[image_idx + 1], render_conut);
+                    current_bdpt[image_idx + 2] = process_pixel(bdpt_buffer[image_idx + 2], render_conut);
+
+                    current_pt[image_idx + 0] = process_pixel(pt_buffer[image_idx + 0], render_conut);
+                    current_pt[image_idx + 1] = process_pixel(pt_buffer[image_idx + 1], render_conut);
+                    current_pt[image_idx + 2] = process_pixel(pt_buffer[image_idx + 2], render_conut);
+
+                    // 5. 寫入 OpenGL Framebuffer
                     framebuffer[ppm_frame_idx + 0] = current_ppm[image_idx + 0];
                     framebuffer[ppm_frame_idx + 1] = current_ppm[image_idx + 1];
                     framebuffer[ppm_frame_idx + 2] = current_ppm[image_idx + 2];
 
-
-                    current_bdpt[image_idx + 0] = (unsigned char) ((bdpt_buffer[image_idx + 0] / (float) render_conut) * 255.f);
-                    current_bdpt[image_idx + 1] = (unsigned char) ((bdpt_buffer[image_idx + 1] / (float) render_conut) * 255.f);
-                    current_bdpt[image_idx + 2] = (unsigned char) ((bdpt_buffer[image_idx + 2] / (float) render_conut) * 255.f);
-
                     framebuffer[bdpt_frame_idx + 0] = current_bdpt[image_idx + 0];
                     framebuffer[bdpt_frame_idx + 1] = current_bdpt[image_idx + 1];
                     framebuffer[bdpt_frame_idx + 2] = current_bdpt[image_idx + 2];
-
-                    // framebuffer[combined_frame_idx + 0] = (unsigned char) ((int) (current_ppm[image_idx + 0] + (int) current_bdpt[image_idx + 0]) / 2.f);
-                    // framebuffer[combined_frame_idx + 1] = (unsigned char) ((int) (current_ppm[image_idx + 1] + (int) current_bdpt[image_idx + 1]) / 2.f);
-                    // framebuffer[combined_frame_idx + 2] = (unsigned char) ((int) (current_ppm[image_idx + 2] + (int) current_bdpt[image_idx + 2]) / 2.f);
-
-                    current_pt[image_idx + 0] = (unsigned char) ((pt_buffer[image_idx + 0] / (float) render_conut) * 255.f);
-                    current_pt[image_idx + 1] = (unsigned char) ((pt_buffer[image_idx + 1] / (float) render_conut) * 255.f);
-                    current_pt[image_idx + 2] = (unsigned char) ((pt_buffer[image_idx + 2] / (float) render_conut) * 255.f);
 
                     framebuffer[combined_frame_idx + 0] = current_pt[image_idx + 0];
                     framebuffer[combined_frame_idx + 1] = current_pt[image_idx + 1];

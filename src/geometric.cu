@@ -12,7 +12,7 @@ std::istream &operator>>(std::istream &is, float3 &dir){
 
 float3 to_cv3(const glm::vec3 &v){ return { v.x, v.y, v.z }; }
 
-CudaMaterial_Old to_cmtl_old(const Material &m){
+CudaMaterial_Old to_cmtl_old(const Material_Old &m){
     CudaMaterial_Old cm;
     cm.Kd = to_cv3(m.Kd);
     cm.Kg = to_cv3(m.Kg);
@@ -31,14 +31,22 @@ float cpu_length(const float3 &v){
 CudaMaterial to_cmtl(const Material &m){
     CudaMaterial cm;
 
-    cm.base_color = to_cv3(m.Kd); 
-    cm.ior = m.refract;
+    // 直接一對一映射 PBR 參數
+    cm.base_color = make_float3(m.base_color.x, m.base_color.y, m.base_color.z);
+    cm.roughness = m.roughness;
+    cm.metallic = m.metallic;
+    cm.eta = m.eta;
 
-    cm.metallic = m.reflect;
-    cm.roughness = 1.0f - (m.reflect);     
-
-    if(m.refract > 0) cm.type = MaterialType::MAT_GLASS;
-    else cm.type = MaterialType::MAT_DIFFUSE;
+    // 依據物理特性判定材質類型 (對應我們前一次的 pbrt-v4 修改)
+    if(cm.eta > 0.0f){
+        cm.type = MaterialType::MAT_DIELECTRIC; // 玻璃 / 透射材質
+    }
+    else if(cm.metallic > 0.0f){
+        cm.type = MaterialType::MAT_CONDUCTOR;  // 金屬 / 導體
+    }
+    else{
+        cm.type = MaterialType::MAT_UBER;       // 一般 Diffuse / 粗糙表面
+    }
 
     return cm;
 }

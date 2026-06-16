@@ -14,14 +14,22 @@ std::istream &operator>>(std::istream &is, glm::vec3 &vec);
 
 enum class ObjKind{ Unknown, Sphere, Triangle };
 
-struct Material{
+struct Material_Old{
     glm::vec3 Kg{ 0.0f };   // ambient
     glm::vec3 Kd{ 0.0f };   // diffuse
     glm::vec3 Ks{ 0.0f };   // specular
-    float glossy{0};
+    float glossy{ 0 };
     float exp{ 32.0f };     // shininess
     float reflect{ 0.0f };  // reflectivity
     float refract{ 0.0f };  // reflectivity
+};
+
+// 在 object.h 或定義 Material 的地方
+struct Material{
+    glm::vec3 base_color; // 取代 Kd, Kg, Ks
+    float roughness;      // 0.0 (完美光滑) ~ 1.0 (極度粗糙)
+    float metallic;       // 0.0 (絕緣體) ~ 1.0 (純金屬)
+    float eta;            // 折射率 IOR (0.0 代表不透光，1.5 為玻璃)
 };
 
 struct Light{

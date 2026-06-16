@@ -22,7 +22,8 @@ void move_data_to_cuda_ppm(std::map<int, AABB> groups, std::vector<CudaLight> &l
                 CudaSphere csph;
                 csph.center = to_cv3(sph->center);
                 csph.r = sph->r;
-                csph.mtl_old = to_cmtl_old(sph->mtl);
+                // csph.mtl_old = to_cmtl_old(sph->mtl);
+                csph.mtl = to_cmtl(sph->mtl);
                 csph.id = sph->obj_id;
                 ppm_ns::cuda_spheres.push_back(csph);
                 ppm_ns::scene_max_bound.x = std::max(ppm_ns::scene_max_bound.x, sph->center.x + sph->r);
@@ -37,7 +38,8 @@ void move_data_to_cuda_ppm(std::map<int, AABB> groups, std::vector<CudaLight> &l
                 ctri.v0 = to_cv3(tri->vert[0]);
                 ctri.v1 = to_cv3(tri->vert[1]);
                 ctri.v2 = to_cv3(tri->vert[2]);
-                ctri.mtl_old = to_cmtl_old(tri->mtl);
+                // ctri.mtl_old = to_cmtl_old(tri->mtl);
+                ctri.mtl = to_cmtl(tri->mtl);
                 ctri.id = tri->obj_id;
                 ppm_ns::cuda_triangles.push_back(ctri);
                 ppm_ns::scene_max_bound.x = std::max({ ppm_ns::scene_max_bound.x, tri->vert[0].x, tri->vert[1].x, tri->vert[2].x });
@@ -57,12 +59,12 @@ void move_data_to_cuda_ppm(std::map<int, AABB> groups, std::vector<CudaLight> &l
     ppm_ns::light_sample = light_sample;
 }
 
-void run_cuda_ppm(CudaCamera cam, float3 *image_buffer, int light_depth, int eye_depth, int W, int H){
+void run_cuda_ppm(CudaCamera cam, float3 *image_buffer, int light_depth, int eye_depth, int W, int H, int spp){
     ppm_render_wrapper(
         ppm_ns::cuda_lights.data(), ppm_ns::cuda_lights.size(),
         ppm_ns::cuda_spheres.data(), ppm_ns::cuda_spheres.size(),
         ppm_ns::cuda_triangles.data(), ppm_ns::cuda_triangles.size(),
         ppm_ns::scene_min_bound, ppm_ns::scene_max_bound,
-        cam, image_buffer, W, H, light_depth, ppm_ns::light_sample, eye_depth
+        cam, image_buffer, W, H, light_depth, ppm_ns::light_sample, eye_depth, spp
     );
 }
